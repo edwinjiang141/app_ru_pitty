@@ -735,6 +735,125 @@ Resources -> Inventories -> Add
 DB_RU_AWX_TEST_Inventory
 ```
 
+#### 7.2.1 创建 Host
+
+**执行位置：AWX UI，进入 `DB_RU_AWX_TEST_Inventory` 后操作。**
+
+路径：
+
+```text
+Resources -> Inventories -> DB_RU_AWX_TEST_Inventory -> Hosts -> Add
+```
+
+分别创建两个 Host。注意：Host 的名字填在页面上方的 **Name/名称** 字段，不是填在 Variables/变量 编辑框里。
+
+| Host Name/名称 | Variables/变量 YAML | 说明 |
+|---|---|---|
+| `node1` | 见下方 node1 示例 | RAC 节点一，后续 Workflow 的 Limit 可直接写 `node1`。 |
+| `node2` | 见下方 node2 示例 | RAC 节点二，后续 Workflow 的 Limit 可直接写 `node2`。 |
+
+node1 的 Variables/变量 填写：
+
+```yaml
+---
+ansible_host: <node1-ip>
+```
+
+node2 的 Variables/变量 填写：
+
+```yaml
+---
+ansible_host: <node2-ip>
+```
+
+如果页面里 Variables/变量 默认只有 `---`，可以保留 `---` 并在下一行写 `ansible_host: <ip>`。不要把 `node1` 或 `node2` 写到 Variables/变量框里；否则 AWX 仍会提示 Name/名称 为空。
+
+#### 7.2.2 创建 Group
+
+**执行位置：AWX UI，进入 `DB_RU_AWX_TEST_Inventory` 后操作。**
+
+路径：
+
+```text
+Resources -> Inventories -> DB_RU_AWX_TEST_Inventory -> Groups -> Add
+```
+
+在“创建新组”页面中：
+
+1. **Name/名称** 字段必须填写组名，例如 `db_nodes`；
+2. **Description/描述** 可选；
+3. **Variables/变量** 不是组名输入框，只用于填写 YAML 变量；没有组变量时保持默认 `---` 或填写空 YAML；
+4. 点击 **Save/保存**。
+
+创建以下两个 Group 即可：
+
+| Group Name/名称 | Variables/变量 | 用途 |
+|---|---|---|
+| `db_nodes` | 保持默认 `---` 或填 `{}` | 表示两个 RAC 节点，给 `Limit=db_nodes` 的 Workflow 节点使用。 |
+| `primary_exec_node` | 保持默认 `---` 或填 `{}` | 表示主控执行节点，给 precheck、datapatch、Summary/Gate、CRS 对比等单点步骤使用。 |
+
+> 不建议再创建名为 `node1`、`node2` 的 Group。`node1` 和 `node2` 已经是 Host 名称，Workflow 的 `Limit=node1` / `Limit=node2` 可以直接命中对应 Host；如果同时创建同名 Group，Ansible 可能出现 host/group 同名歧义或警告。
+
+如果想让 Variables/变量框有明确 YAML，可以填写：
+
+```yaml
+---
+{}
+```
+
+你截图里的报错“名称不能为空”，原因就是页面上方 **名称** 字段没有填写；在 Variables/变量框里输入内容不能代替组名。正确做法是：
+
+```text
+名称: db_nodes
+变量: 保持默认 ---，或填写 --- + {}
+```
+
+#### 7.2.3 给 Group 添加 Host
+
+**执行位置：AWX UI，进入 `DB_RU_AWX_TEST_Inventory` 后操作。**
+
+创建 Group 后，需要把已有 Host 关联进去。按下面步骤操作：
+
+##### A. 给 `db_nodes` 添加 node1 和 node2
+
+路径：
+
+```text
+Resources -> Inventories -> DB_RU_AWX_TEST_Inventory -> Groups -> db_nodes -> Hosts
+```
+
+操作：
+
+1. 点击 **Associate/关联** 或 **Add existing host/添加已有主机**；
+2. 勾选 `node1` 和 `node2`；
+3. 点击保存或确认关联；
+4. 回到 `db_nodes -> Hosts`，确认列表里有 `node1` 和 `node2`。
+
+##### B. 给 `primary_exec_node` 添加 node1
+
+路径：
+
+```text
+Resources -> Inventories -> DB_RU_AWX_TEST_Inventory -> Groups -> primary_exec_node -> Hosts
+```
+
+操作：
+
+1. 点击 **Associate/关联** 或 **Add existing host/添加已有主机**；
+2. 勾选 `node1`；
+3. 点击保存或确认关联；
+4. 回到 `primary_exec_node -> Hosts`，确认列表里只有 `node1`。
+
+最终 Inventory 关系应为：
+
+| 对象 | 包含内容 | 后续 Limit 写法 |
+|---|---|---|
+| Host `node1` | `ansible_host: <node1-ip>` | `node1` |
+| Host `node2` | `ansible_host: <node2-ip>` | `node2` |
+| Group `db_nodes` | Host `node1`、Host `node2` | `db_nodes` |
+| Group `primary_exec_node` | Host `node1` | `primary_exec_node` |
+
+#### 7.2.4 Inventory Variables
 创建 Host：
 
 | Host | Variables |
