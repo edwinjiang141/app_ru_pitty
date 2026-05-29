@@ -541,11 +541,159 @@ kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
 
 **执行位置：k3s 节点。**
 
+如果 UI 不显示手工目录，先检查 AWX Task Pod 中是否能看到文件：
 如果 UI 不显示手工目录，检查：
 
 ```bash
 kubectl -n awx exec -it <awx-task-pod> -- bash -lc 'find /var/lib/awx/projects -maxdepth 3 -type f -print -exec sed -n "1,20p" {} \;'
 ```
+
+### 6.2.1 Playbook 目录下拉框为空时的原因和处理
+
+如果执行上面的 `find` 已经能在 **AWX Task Pod** 中看到：
+
+```text
+/var/lib/awx/projects/db-ru-automation/playbooks/run_ru_step.yml
+```
+
+但 AWX UI 仍提示：
+
+```text
+/var/lib/awx/projects 中没有可用的 playbook 目录
+```
+
+通常不是 playbook 内容问题，而是以下原因之一：
+
+| 原因 | 现象 | 处理方式 |
+|---|---|---|
+| 只复制到了 AWX Task Pod，AWX Web Pod 看不到 | `task` Pod 中 `find` 能看到文件，但 UI 下拉框为空 | 同时检查 AWX Web Pod；如果 Web Pod 看不到，需要复制到 Web Pod，或配置 projects persistence。 |
+| `/var/lib/awx/projects` 没有持久化共享 PVC | Pod 重启后文件消失，Web/Task 看到的内容不一致 | 使用 AWX Operator 配置 projects persistence，或测试阶段临时同时复制到 web/task。 |
+| 目录层级选择不匹配 | 文件在 `db-ru-automation/playbooks/run_ru_step.yml`，但下拉框期望选择实际包含 playbook 的目录 | 优先选择 `db-ru-automation/playbooks`；如果仍不出现，按下面的 flat layout 处理。 |
+| 文件权限/属主不合适 | Pod 内 root 能看到，但 `awx` 用户不可读 | 调整目录为 `755`、文件为 `644`，必要时 `chown -R awx:awx`。 |
+| UI 缓存或 Project 页面未刷新 | 文件已复制但下拉框仍旧为空 | 退出 Project 创建页后重新进入，或刷新浏览器页面。 |
+
+#### 第 1 步：同时确认 Web Pod 和 Task Pod 是否都能看到文件
+
+**执行位置：k3s 节点。**
+
+先找出 AWX Web/Task Pod 名称：
+
+```bash
+kubectl -n awx get pods -o wide
+kubectl -n awx get pods -o name | egrep 'web|task'
+```
+
+分别检查 Web Pod 和 Task Pod 的 `/var/lib/awx/projects`：
+
+```bash
+AWX_WEB_POD=<填写-awx-web-pod-name>
+AWX_TASK_POD=<填写-awx-task-pod-name>
+
+kubectl -n awx exec -it "${AWX_WEB_POD}" -- bash -lc 'id; ls -ld /var/lib/awx/projects; find /var/lib/awx/projects -maxdepth 4 -type f \( -name "*.yml" -o -name "*.yaml" \)'
+kubectl -n awx exec -it "${AWX_TASK_POD}" -- bash -lc 'id; ls -ld /var/lib/awx/projects; find /var/lib/awx/projects -maxdepth 4 -type f \( -name "*.yml" -o -name "*.yaml" \)'
+```
+
+判断方式：
+
+| 检查结果 | 结论 | 下一步 |
+|---|---|---|
+| Web/Task 都能看到同一个 `run_ru_step.yml` | 共享或复制已正确 | 继续检查目录层级和权限。 |
+| 只有 Task 能看到，Web 看不到 | UI 下拉框为空的最常见原因 | 按第 2 步复制到 Web Pod，或配置 projects persistence。 |
+| Web/Task 都看不到 | 文件没有成功导入 AWX Project 目录 | 回到 6.2 重新执行 `kubectl cp`。 |
+
+#### 第 2 步：测试阶段临时同时复制到 Web Pod 和 Task Pod
+
+**执行位置：k3s 节点。**
+
+如果当前只是为了尽快测试，而且还没有配置 projects persistence，可以临时把 Project 文件同时复制到 Web Pod 和 Task Pod：
+
+```bash
+AWX_WEB_POD=<填写-awx-web-pod-name>
+AWX_TASK_POD=<填写-awx-task-pod-name>
+
+for pod in "${AWX_WEB_POD}" "${AWX_TASK_POD}"; do
+  kubectl -n awx exec -it "${pod}" -- bash -lc 'mkdir -p /var/lib/awx/projects/db-ru-automation/playbooks'
+  kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
+    "${pod}":/var/lib/awx/projects/db-ru-automation/playbooks/run_ru_step.yml
+  kubectl -n awx exec -it "${pod}" -- bash -lc 'chmod -R a+rX /var/lib/awx/projects/db-ru-automation; find /var/lib/awx/projects/db-ru-automation -maxdepth 4 -type f -print'
+done
+```
+
+> 注意：这是测试阶段的临时做法。只复制到 Pod 文件系统时，Pod 重建后文件可能丢失；稳定做法是配置 AWX projects persistence，或改用内网临时 Git。
+
+#### 第 3 步：优先使用扁平目录降低 AWX 下拉框识别问题
+
+**执行位置：k3s 节点。**
+
+有些 AWX 版本在 Manual Project 下拉框中更容易识别“直接包含 playbook 的一级目录”。如果 `db-ru-automation/playbooks` 不出现在下拉框，可以把 playbook 直接放到 `db-ru-automation` 目录下：
+
+```bash
+AWX_WEB_POD=<填写-awx-web-pod-name>
+AWX_TASK_POD=<填写-awx-task-pod-name>
+
+for pod in "${AWX_WEB_POD}" "${AWX_TASK_POD}"; do
+  kubectl -n awx exec -it "${pod}" -- bash -lc 'mkdir -p /var/lib/awx/projects/db-ru-automation'
+  kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
+    "${pod}":/var/lib/awx/projects/db-ru-automation/run_ru_step.yml
+  kubectl -n awx exec -it "${pod}" -- bash -lc 'chmod -R a+rX /var/lib/awx/projects/db-ru-automation; find /var/lib/awx/projects/db-ru-automation -maxdepth 3 -type f -print'
+done
+```
+
+然后在 AWX UI 创建 Project 时使用：
+
+| 字段 | 值 |
+|---|---|
+| Source Control Type | `Manual` |
+| Playbook Directory | `db-ru-automation` |
+
+后续 Job Template 的 Playbook 字段应选择：
+
+```text
+run_ru_step.yml
+```
+
+如果仍采用原来的子目录方式，则 Project 的 Playbook Directory 应优先选择：
+
+```text
+db-ru-automation/playbooks
+```
+
+后续 Job Template 的 Playbook 字段选择：
+
+```text
+run_ru_step.yml
+```
+
+不要把 Project 的 Playbook Directory 选成 `db-ru-automation`，同时又在 Job Template 中填写 `playbooks/run_ru_step.yml`，否则不同 AWX 版本的 UI 扫描行为可能不一致。
+
+#### 第 4 步：确认权限和刷新 UI
+
+**执行位置：k3s 节点。**
+
+```bash
+AWX_WEB_POD=<填写-awx-web-pod-name>
+AWX_TASK_POD=<填写-awx-task-pod-name>
+
+for pod in "${AWX_WEB_POD}" "${AWX_TASK_POD}"; do
+  kubectl -n awx exec -it "${pod}" -- bash -lc 'ls -ld /var/lib/awx/projects /var/lib/awx/projects/db-ru-automation; find /var/lib/awx/projects/db-ru-automation -maxdepth 3 -type f -ls'
+done
+```
+
+如果 Pod 内存在 `awx` 用户，可以进一步设置属主：
+
+```bash
+for pod in "${AWX_WEB_POD}" "${AWX_TASK_POD}"; do
+  kubectl -n awx exec -it "${pod}" -- bash -lc 'id awx >/dev/null 2>&1 && chown -R awx:awx /var/lib/awx/projects/db-ru-automation || true; chmod -R a+rX /var/lib/awx/projects/db-ru-automation'
+done
+```
+
+最后回到 AWX UI：
+
+1. 退出当前 Project 创建页面；
+2. 重新进入 `Resources -> Projects -> Add`；
+3. `Source Control Type` 选择 `Manual`；
+4. 再打开 `Playbook Directory` 下拉框；
+5. 如果使用扁平目录，选择 `db-ru-automation`；如果使用子目录方式，选择 `db-ru-automation/playbooks`。
 
 ### 6.3 备选方式 B：使用本地临时 Git 服务
 
