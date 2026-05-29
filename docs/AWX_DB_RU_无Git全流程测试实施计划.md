@@ -1,4 +1,4 @@
-# AWX 无 Git 场景下 DB RU Runbook 全流程测试实施计划
+# AWX 无 Git 场景下 DB RU Runbook 全流程测试实施计划- v1
 
 > 适用状态：k3s 单节点、AWX Operator、AWX Web/Task/EE/PostgreSQL/Redis 等 Pod 已经正常 Running；当前阶段准备开始验证 `AAP_DB_RU_命令式Runbook完整开发实施方案_v3_AWX验证适配版.md` 中的 DB RU 自动化方案。
 > 关键约束：AWX 所在 k3s 环境暂时无法访问 Git；DB/RAC 目标机器位于 k3s Pod 外部；本计划以“手工导入 Project 内容 + AWX 连接外部目标主机 + mock/check/real 分阶段验证”为主线。
