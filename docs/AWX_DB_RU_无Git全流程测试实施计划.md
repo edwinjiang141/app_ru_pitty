@@ -893,6 +893,52 @@ AWX UI：
 Resources -> Credentials -> Add
 ```
 
+初期建议只创建一个测试 Machine Credential。当前方案推荐 **SSH key 登录 + sudo NOPASSWD**，因此截图里的两个密码框通常都不需要填写：
+
+| 字段 | 值 | 是否填写 | 填哪个机器/账号的内容 |
+|---|---|---|---|
+| Name | `DB_RU_AWX_aap_ru_credential` | 必填 | AWX 内部 Credential 名称。 |
+| Organization | `DB_RU_Test_Org` | 必填 | AWX Organization。 |
+| Credential Type | Machine | 必填 | AWX Credential 类型。 |
+| Username | `aap_ru` | 必填 | **目标主机 node1/node2 上的登录账号**，不是 k3s 节点账号，也不是 AWX Pod 账号。 |
+| Password / 密码 | 留空 | 推荐留空 | 只有不用 SSH key、改用密码 SSH 登录 node1/node2 时，才填写目标主机 `aap_ru` 的登录密码。当前 key-based 方案不填。 |
+| SSH Private Key / SSH 私钥 | 粘贴 `/root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519` 的完整私钥内容，必须包含 `-----BEGIN OPENSSH PRIVATE KEY-----` 和 `-----END OPENSSH PRIVATE KEY-----` | 必填 | 第 5.2 节生成的 **私钥**。它与 node1/node2 `authorized_keys` 中的 `.pub` 公钥配对。 |
+| Private Key Passphrase / 私钥密码 | 留空 | 推荐留空 | 第 5.2 节 `ssh-keygen ... -N ''` 生成的是**无 passphrase 私钥**，所以这里不填。只有私钥生成时设置了 passphrase，才填写该私钥 passphrase。 |
+| Privilege Escalation Method / 权限升级方法 | `sudo` | 如需要 root 类 step 则填写 | 表示 AWX 以 `aap_ru` 登录目标主机后用 sudo 提权。 |
+| Privilege Escalation Username / 权限升级用户名 | `root` | 如需要 root 类 step 则填写 | sudo 目标用户是 **目标主机 node1/node2 上的 root**。 |
+| Privilege Escalation Password / 权限升级密码 | 留空 | 推荐留空 | 因为第 5.4 节建议配置 `NOPASSWD` sudoers，所以不填。只有目标主机 sudoers 要求输入 sudo 密码时，才填写目标主机上 `aap_ru` 的 sudo 密码。 |
+
+#### 7.3.1 关于截图中两个密码框的填写规则
+
+**执行位置：AWX UI，Credential 创建页面。**
+
+你截图中常见的两个密码相关输入框可以按下面判断：
+
+| 截图字段 | 当前推荐值 | 原因 |
+|---|---|---|
+| `密码` / `Password` | **不填** | 当前使用 SSH Private Key 登录外部目标主机，不使用 SSH 密码登录。 |
+| `私钥密码` / `Private Key Passphrase` | **不填** | 文档中生成私钥时使用 `ssh-keygen ... -N ''`，表示私钥没有 passphrase。 |
+| `权限升级密码` / `Privilege Escalation Password` | **不填** | 文档中 sudoers 使用 `NOPASSWD`，sudo 不需要输入密码。 |
+
+如果现场安全策略不允许 `NOPASSWD`，则：
+
+```text
+权限升级方法: sudo
+权限升级用户名: root
+权限升级密码: 填 node1/node2 目标主机上 aap_ru 执行 sudo 时需要输入的密码
+```
+
+如果 node1 和 node2 的 `aap_ru` 密码或 sudo 密码不同，不要共用一个 Machine Credential；应拆成不同 Credential 或先统一测试账号密码/密钥策略。
+
+如果不用 SSH key，而改用密码登录，则：
+
+```text
+Username: aap_ru
+Password/密码: 填 node1/node2 目标主机上 aap_ru 的 SSH 登录密码
+SSH Private Key: 留空
+```
+
+但本测试方案不推荐密码登录，推荐继续使用 SSH key。
 初期建议只创建一个测试 Machine Credential：
 
 | 字段 | 值 |
