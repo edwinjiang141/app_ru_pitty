@@ -1,4 +1,5 @@
 # AWX 无 Git 场景下 DB RU Runbook 全流程测试实施计划
+# AWX 无 Git 场景下 DB RU Runbook 全流程测试实施计划- v1
 
 > 适用状态：k3s 单节点、AWX Operator、AWX Web/Task/EE/PostgreSQL/Redis 等 Pod 已经正常 Running；当前阶段准备开始验证 `AAP_DB_RU_命令式Runbook完整开发实施方案_v3_AWX验证适配版.md` 中的 DB RU 自动化方案。
 > 关键约束：AWX 所在 k3s 环境暂时无法访问 Git；DB/RAC 目标机器位于 k3s Pod 外部；本计划以“手工导入 Project 内容 + AWX 连接外部目标主机 + mock/check/real 分阶段验证”为主线。
@@ -265,6 +266,9 @@ cat /root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519
 ### 5.3 目标主机创建测试账号
 
 在 node1/node2 上执行，其中 `<粘贴 AWX 测试 SSH 公钥>` 来自上一节生成的 `.pub` 文件：
+### 5.2 目标主机创建测试账号
+
+在 node1/node2 上执行：
 
 ```bash
 useradd -m -s /bin/bash aap_ru
@@ -282,6 +286,9 @@ chown -R aap_ru:aap_ru /home/aap_ru/.ssh
 ### 5.4 sudoers 分阶段配置
 
 #### 5.4.1 Smoke/Mock 阶段
+### 5.3 sudoers 分阶段配置
+
+#### 5.3.1 Smoke/Mock 阶段
 
 只允许基础命令，不允许破坏性命令：
 
@@ -294,6 +301,7 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_mock
 ```
 
 #### 5.4.2 Check-only 阶段
+#### 5.3.2 Check-only 阶段
 
 允许切换到 grid/oracle 执行非破坏性检查命令。路径以现场实际为准：
 
@@ -309,6 +317,7 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_check
 > 注意：Check-only 阶段只放行非破坏性检查；真实阶段必须按实际命令重新做最小化授权评审。
 
 #### 5.4.3 UAT Real 阶段
+#### 5.3.3 UAT Real 阶段
 
 真实 DB RU 阶段需要按每个 step 实际命令最小化授权，不建议直接给 `ALL=(ALL) NOPASSWD: ALL`。如果测试窗口紧张，至少应做到：
 
@@ -319,6 +328,7 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_check
 5. `rm -rf`、`srvctl stop`、`datapatch`、home switch 等高风险命令由 runner 的 `allow_destructive_step` 和 Summary/Approval 双重控制。
 
 ### 5.5 创建自动化目录
+### 5.4 创建自动化目录
 
 在 node1/node2 上创建目录：
 
@@ -537,6 +547,7 @@ Resources -> Credentials -> Add
 | Credential Type | Machine |
 | Username | `aap_ru` |
 | SSH Private Key | 粘贴 `/root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519` 的完整私钥内容，必须包含 `-----BEGIN OPENSSH PRIVATE KEY-----` 和 `-----END OPENSSH PRIVATE KEY-----` |
+| SSH Private Key | `<粘贴私钥>` |
 | Privilege Escalation Method | `sudo`，如需要 |
 | Privilege Escalation Username | `root`，如需要 |
 
