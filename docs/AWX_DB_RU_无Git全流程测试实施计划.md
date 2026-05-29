@@ -1016,6 +1016,265 @@ approval_report_required: false
 
 此时目标主机还没有 runner，预期会失败在 `ru_step_runner.sh not found`。这个失败可以接受，说明 AWX 已经能运行 Project playbook 并尝试连接目标主机。随后进入 runner 落地。
 
+### 8.4 Smoke 作业一直等待输出时的排查
+
+如果 AWX UI 一直显示“等待作业输出”，同时 k3s 中出现类似下面的 Pod：
+
+```text
+pod/automation-job-1-xxxxx   0/1   Pending
+```
+
+说明 AWX 已经创建了本次 Job 的 **Execution Environment 运行 Pod**，但该 Pod 还没有调度成功或容器还没有启动。此时 Ansible playbook 尚未开始执行，所以 AWX UI 没有 stdout 是正常现象。排查重点不是目标主机 SSH，也不是 playbook 语法，而是先把 `automation-job-*` Pod 从 `Pending` 变成 `Running` 或看到明确失败原因。
+
+#### 第 1 步：查看 automation-job Pod 的事件
+
+**执行位置：k3s 节点。**
+
+```bash
+kubectl -n awx get pods -o wide
+kubectl -n awx describe pod automation-job-1-xxxxx
+```
+
+把 `automation-job-1-xxxxx` 替换成现场实际名称，例如：
+
+```bash
+kubectl -n awx describe pod automation-job-1-fr8sn
+```
+
+重点看输出底部 `Events`。常见原因和处理方式：
+
+| Events 关键字 | 含义 | 处理方向 |
+|---|---|---|
+| `FailedScheduling` / `Insufficient cpu` / `Insufficient memory` | k3s 节点资源不足或调度失败 | 当前 2 vCPU 不足以同时承载 AWX web/task/postgres/operator 和 automation-job EE Pod；建议先把 VM 调整到 **至少 4 vCPU**，完整 Mock/Check/UAT 建议 **8 vCPU**。 |
+| `ErrImagePull` / `ImagePullBackOff` / `pull access denied` | 拉取 Execution Environment 镜像失败 | 确认 EE 镜像地址可访问；内网环境需提前导入镜像或改用本地可拉取镜像。 |
+| `FailedMount` / `MountVolume` | PVC、project 目录或临时卷挂载失败 | 检查 PVC、StorageClass、local-path provisioner、Pod 挂载事件。 |
+| `node(s) had untolerated taint` | 节点 taint 不允许调度 | 调整 k3s 节点 taint/toleration，或修改 AWX/EE Pod 调度配置。 |
+| `quota` / `exceeded quota` | namespace 资源配额限制 | 调整 awx namespace quota 或降低资源请求。 |
+
+#### 第 1.1 步：`Insufficient cpu` 时 VM CPU 应该调到多少
+
+**执行位置：虚拟化平台控制台 + k3s 节点。**
+
+如果 `describe pod` 里出现：
+
+```text
+default-scheduler  0/1 nodes are available: 1 Insufficient cpu. preemption: 0/1 nodes are available: 1 No preemption victims found for incoming pod
+```
+
+结论是：当前单节点 k3s 的可调度 CPU 不够，`automation-job-*` Pod 无法启动，所以 AWX UI 没有作业输出。对于本 AWX DB RU 测试环境，VM CPU 建议如下：
+
+| 场景 | vCPU 建议 | 说明 |
+|---|---:|---|
+| 当前 2 vCPU | 不建议继续 | AWX web/task/postgres/operator 已占用资源请求，Job EE Pod 很容易 Pending。 |
+| 最低可继续 Smoke/Mock | **4 vCPU** | 可先把 VM 从 2 vCPU 调到 4 vCPU，通常能让单个 automation-job Pod 调度起来。 |
+| 推荐完整 Full Mock / Check-only | **8 vCPU** | 27 step Workflow、Approval、多个 Job Pod 连续启动时更稳。 |
+| UAT Real 或多人并发验证 | 8 vCPU 以上 | 同时建议内存 24 GB 以上，并严格关闭 Workflow 并发。 |
+
+内存也要同步关注：最低建议 16 GB，推荐 24 GB。只加 CPU 不加内存时，如果后续出现 `Insufficient memory`，还需要再扩内存。
+
+如果暂时无法加 CPU，可以临时尝试降低 Execution Environment / Job Pod 的 CPU request，或者停止其他测试 Job 释放资源；但这只是权宜之计。本方案建议先扩到 4 vCPU，稳定验证阶段再扩到 8 vCPU。
+
+#### 第 1.2 步：调整 VM CPU 前的停止和备份顺序
+
+**执行位置：AWX UI、k3s 节点、虚拟化平台控制台。**
+
+多数虚拟化平台给 VM 增加 vCPU 需要关机或重启。重启前按以下顺序执行，避免丢失手工导入的 Project 文件和测试证据。
+
+##### A. 在 AWX UI 停止新作业和取消当前 Pending 作业
+
+**执行位置：AWX UI。**
+
+1. 进入当前 Smoke Job 页面；
+2. 点击 Cancel/取消；
+3. 确认没有其他 Running/Pending 的 DB RU 测试 Job；
+4. 暂停继续 Launch 新 Job，直到 VM 扩容完成。
+
+##### B. 在 k3s 节点记录当前状态
+
+**执行位置：k3s 节点。**
+
+```bash
+mkdir -p /root/db_ru_awx_test/evidence/reboot_$(date +%Y%m%d_%H%M%S)
+EVIDENCE_DIR=$(ls -td /root/db_ru_awx_test/evidence/reboot_* | head -1)
+
+kubectl -n awx get pods,svc,pvc -o wide | tee "${EVIDENCE_DIR}/awx_pods_svc_pvc_before.txt"
+kubectl get nodes -o wide | tee "${EVIDENCE_DIR}/nodes_before.txt"
+kubectl -n awx describe pod automation-job-1-xxxxx > "${EVIDENCE_DIR}/automation_job_describe_before.txt" 2>&1 || true
+```
+
+把 `automation-job-1-xxxxx` 替换成现场实际的 Pending Pod 名称。
+
+##### C. 备份手工 Manual Project 文件
+
+**执行位置：k3s 节点。**
+
+如果之前是手工复制到 AWX Pod 的 `/var/lib/awx/projects`，重启或 Pod 重建后可能丢失。重启前先把 Project 目录备份到 k3s 节点本地：
+
+```bash
+AWX_TASK_POD=<填写-awx-task-pod-name>
+mkdir -p /root/db_ru_awx_test/backup/manual_project_before_reboot
+
+kubectl -n awx cp \
+  "${AWX_TASK_POD}":/var/lib/awx/projects/db-ru-automation \
+  /root/db_ru_awx_test/backup/manual_project_before_reboot/db-ru-automation \
+  || true
+
+find /root/db_ru_awx_test/backup/manual_project_before_reboot -maxdepth 4 -type f -print
+```
+
+如果 Web Pod 和 Task Pod 的 Project 文件不一致，也分别备份：
+
+```bash
+AWX_WEB_POD=<填写-awx-web-pod-name>
+AWX_TASK_POD=<填写-awx-task-pod-name>
+
+for pod in "${AWX_WEB_POD}" "${AWX_TASK_POD}"; do
+  mkdir -p "/root/db_ru_awx_test/backup/${pod}_projects_before_reboot"
+  kubectl -n awx cp \
+    "${pod}":/var/lib/awx/projects/db-ru-automation \
+    "/root/db_ru_awx_test/backup/${pod}_projects_before_reboot/db-ru-automation" \
+    || true
+done
+```
+
+##### D. 可选：做 VM 快照
+
+**执行位置：虚拟化平台控制台。**
+
+如果条件允许，在关机前对整台 AWX/k3s VM 做一次快照。快照名称建议包含：
+
+```text
+before_add_cpu_awx_db_ru_<日期>
+```
+
+##### E. 停止 k3s 并关机
+
+**执行位置：k3s 节点。**
+
+```bash
+systemctl stop k3s
+systemctl status k3s --no-pager || true
+sync
+shutdown -h now
+```
+
+##### F. 在虚拟化平台调整 VM 规格
+
+**执行位置：虚拟化平台控制台。**
+
+1. 将 VM 从 2 vCPU 调整到至少 4 vCPU；
+2. 如果资源允许，建议直接调到 8 vCPU；
+3. 内存最低保持 16 GB，推荐 24 GB；
+4. 启动 VM。
+
+##### G. 重启后验证 k3s/AWX
+
+**执行位置：k3s 节点。**
+
+```bash
+lscpu | egrep 'CPU\(s\)|Model name'
+free -h
+systemctl status k3s --no-pager
+kubectl get nodes -o wide
+kubectl -n awx get pods,svc,pvc -o wide
+```
+
+等待 AWX 相关 Pod 全部 Running：
+
+```bash
+watch -n 5 'kubectl -n awx get pods,svc,pvc'
+```
+
+##### H. 如 Manual Project 丢失，恢复 Project 文件
+
+**执行位置：k3s 节点。**
+
+如果 AWX UI 中 Project 下拉又看不到目录，或 Pod 内 `/var/lib/awx/projects/db-ru-automation` 不存在，则恢复备份：
+
+```bash
+AWX_WEB_POD=<填写-awx-web-pod-name>
+AWX_TASK_POD=<填写-awx-task-pod-name>
+
+for pod in "${AWX_WEB_POD}" "${AWX_TASK_POD}"; do
+  kubectl -n awx exec -it "${pod}" -- bash -lc 'mkdir -p /var/lib/awx/projects'
+  kubectl -n awx cp \
+    /root/db_ru_awx_test/backup/manual_project_before_reboot/db-ru-automation \
+    "${pod}":/var/lib/awx/projects/db-ru-automation
+  kubectl -n awx exec -it "${pod}" -- bash -lc 'chmod -R a+rX /var/lib/awx/projects/db-ru-automation'
+done
+```
+
+##### I. 重新运行 Smoke Job
+
+**执行位置：AWX UI。**
+
+1. 重新打开 `DB_RU_AWX_RUN_CHECK` 或本次 Smoke 使用的 Job Template；
+2. 使用同样的 `step_id: "00"` Extra Vars；
+3. Launch；
+4. 观察 `automation-job-*` 是否从 `Pending` 变成 `Running`；
+5. 如果仍 Pending，再执行 `kubectl -n awx describe pod <automation-job-pod>` 查看新的 Events。
+
+#### 第 2 步：确认 Job Pod 使用的 EE 镜像和资源请求
+
+**执行位置：k3s 节点。**
+
+```bash
+kubectl -n awx get pod automation-job-1-xxxxx \
+  -o jsonpath='{.spec.containers[*].image}{"\n"}{.spec.containers[*].resources}{"\n"}'
+```
+
+如果镜像来自公网，而当前 k3s 节点不能访问公网，就会一直卡在拉镜像或进入 `ImagePullBackOff`。处理方式：
+
+1. 在 AWX UI 的 Execution Environment 中换成当前环境能拉取的 EE 镜像；
+2. 或在 k3s 节点提前导入该 EE 镜像；
+3. 或配置内网镜像仓库/镜像代理。
+
+#### 第 3 步：看 AWX Task Pod 是否已经提交 Job
+
+**执行位置：k3s 节点。**
+
+```bash
+kubectl -n awx logs <awx-task-pod> --tail=200
+```
+
+如果需要持续观察：
+
+```bash
+kubectl -n awx logs -f <awx-task-pod>
+```
+
+Task Pod 日志可确认 AWX 是否成功创建 runner Pod、是否有 receptor/dispatcher 相关错误。
+
+#### 第 4 步：如果 Pod 进入 Running 但仍无输出
+
+**执行位置：k3s 节点。**
+
+如果 `automation-job-*` 已经是 `Running`，但 UI 仍无输出，再看 Job Pod 日志：
+
+```bash
+kubectl -n awx logs automation-job-1-xxxxx --all-containers=true --tail=200
+```
+
+如果日志显示正在 SSH 连接目标主机但卡住，再回到第 4 章检查 Pod 网络到 node1/node2 的 22 端口、Credential、known_hosts 和目标主机防火墙。
+
+#### 第 5 步：Smoke 阶段的预期状态
+
+Smoke 阶段正确的执行链路应该是：
+
+```text
+AWX UI Job Running
+  -> k3s 出现 automation-job-* Pod
+  -> automation-job-* 从 Pending 变 Running
+  -> AWX UI 开始出现 Ansible stdout
+  -> 如果目标主机还没放 runner，则失败在 ru_step_runner.sh not found
+```
+
+因此：
+
+- 如果卡在 `Pending`，先排 Kubernetes 调度、镜像、PVC、资源；
+- 如果进入 `Running` 后卡住，再排 SSH、Credential、目标主机网络；
+- 如果已经有 stdout 并报 `ru_step_runner.sh not found`，说明 Smoke 目标已经达到，可以进入第 9 章落地 runner。
+
 ---
 
 ## 9. 阶段 6：落地 Runner、Step 脚本和 Summary 脚本
