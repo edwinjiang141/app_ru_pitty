@@ -482,6 +482,7 @@ cat > /root/db_ru_awx_test/project/playbooks/run_ru_step.yml <<'EOF_PLAYBOOK'
     platform_mode: "{{ platform_mode | default('awx_test') }}"
     allow_destructive_step: "{{ allow_destructive_step | default(false) }}"
     change_id: "{{ change_id | default('AWX-TEST-CHG0001') }}"
+    step_name: "{{ step_name | default('step_' ~ step_id | default('unknown')) }}"
     approval_report_required: "{{ approval_report_required | default(true) }}"
 
   tasks:
@@ -498,6 +499,7 @@ cat > /root/db_ru_awx_test/project/playbooks/run_ru_step.yml <<'EOF_PLAYBOOK'
           - "platform_mode={{ platform_mode }}"
           - "ru_run_mode={{ ru_run_mode }}"
           - "step_id={{ step_id }}"
+          - "step_name={{ step_name }}"
           - "change_id={{ change_id }}"
           - "allow_destructive_step={{ allow_destructive_step }}"
           - "approval_report_required={{ approval_report_required }}"
@@ -510,6 +512,7 @@ cat > /root/db_ru_awx_test/project/playbooks/run_ru_step.yml <<'EOF_PLAYBOOK'
         # 例如 step_id=05A -> /u01/patch1930/ru_automation/steps/step_05A.sh
         {{ ru_base_dir }}/bin/ru_step_runner.sh \
           --step-id "{{ step_id }}" \
+          --step-name "{{ step_name }}" \
           --run-mode "{{ ru_run_mode }}" \
           --platform-mode "{{ platform_mode }}" \
           --change-id "{{ change_id }}" \
@@ -1323,6 +1326,8 @@ Workflow Node
 | `step_id` | 决定 runner 最终调用哪个 step 脚本 | `step_id: "01"` |
 | step 脚本 | 真正承载本步骤的 shell 命令 | `steps/step_01.sh` |
 
+`step_name` 不参与脚本选择，只用于可读性：让 Job Output、runner 日志、`result.json` 中能看到“Step 01 - create backup dir”这样的业务名称。
+
 第一阶段从 Step 00 到 Approval A 的对应关系如下：
 
 | Workflow 节点 | 选择的 JT/节点类型 | Extra Vars 中的 `step_id` | 实际执行脚本 | 说明 |
@@ -1352,6 +1357,7 @@ set -Eeuo pipefail
 
 RU_BASE_DIR="/u01/patch1930/ru_automation"
 STEP_ID=""
+STEP_NAME=""
 RUN_MODE="mock"
 PLATFORM_MODE="awx_test"
 CHANGE_ID="AWX-TEST-CHG0001"
@@ -1361,6 +1367,7 @@ APPROVAL_REPORT_REQUIRED="true"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --step-id) STEP_ID="$2"; shift 2 ;;
+    --step-name) STEP_NAME="$2"; shift 2 ;;
     --run-mode) RUN_MODE="$2"; shift 2 ;;
     --platform-mode) PLATFORM_MODE="$2"; shift 2 ;;
     --change-id) CHANGE_ID="$2"; shift 2 ;;
@@ -1379,6 +1386,10 @@ case "${STEP_ID}" in
   00|01|02|03|04|05|05A|06|07|08|09|10|10A|11|12|13|14|14A|15|16|17|18|18A|19|19A|20|21|22|23|24|24A|25|26|27|99) ;;
   *) echo "ERROR: unsupported step id: ${STEP_ID}" >&2; exit 2 ;;
 esac
+
+if [[ -z "${STEP_NAME}" ]]; then
+  STEP_NAME="step_${STEP_ID}"
+fi
 
 mkdir -p "${RU_BASE_DIR}"/{logs,state,reports,tmp}
 TS="$(date +%Y%m%d_%H%M%S)"
@@ -1400,6 +1411,7 @@ if [[ " ${DESTRUCTIVE_STEPS} " == *" ${STEP_ID} "* ]]; then
   fi
 fi
 
+export RU_BASE_DIR STEP_ID STEP_NAME RUN_MODE PLATFORM_MODE CHANGE_ID ALLOW_DESTRUCTIVE_STEP APPROVAL_REPORT_REQUIRED LOG_FILE RESULT_FILE
 export RU_BASE_DIR STEP_ID RUN_MODE PLATFORM_MODE CHANGE_ID ALLOW_DESTRUCTIVE_STEP APPROVAL_REPORT_REQUIRED LOG_FILE RESULT_FILE
 
 {
@@ -1408,6 +1420,7 @@ export RU_BASE_DIR STEP_ID RUN_MODE PLATFORM_MODE CHANGE_ID ALLOW_DESTRUCTIVE_ST
   echo "hostname=$(hostname)"
   echo "whoami=$(whoami)"
   echo "step_id=${STEP_ID}"
+  echo "step_name=${STEP_NAME}"
   echo "run_mode=${RUN_MODE}"
   echo "platform_mode=${PLATFORM_MODE}"
   echo "change_id=${CHANGE_ID}"
@@ -1441,6 +1454,7 @@ fi
 cat > "${RESULT_FILE}" <<EOF_JSON
 {
   "step_id": "${STEP_ID}",
+  "step_name": "${STEP_NAME}",
   "status": "${STATUS}",
   "rc": ${RC},
   "run_mode": "${RUN_MODE}",
@@ -1844,6 +1858,7 @@ Step 01 的 Extra Variables：
 ```yaml
 ---
 step_id: "01"
+step_name: "Step 01 - create backup dir"
 ru_run_mode: "mock"
 platform_mode: "awx_test"
 change_id: "AWX-TEST-FULL-MOCK-0001"
@@ -1924,6 +1939,56 @@ approval_report_required: true
 
 节点别名只影响画布显示，不影响实际执行的 Job Template。
 
+#### 10.5.3 作业列表仍显示 `DB_RU_AWX_RUN_ROOT + 数字` 怎么办
+
+**结论：这是 AWX 的正常机制。**
+
+AWX 的“作业 / Jobs”列表显示的是实际启动的 **Job Template 名称**，例如：
+
+```text
+13 - DB_RU_AWX_RUN_ROOT
+10 - DB_RU_AWX_RUN_ROOT
+```
+
+Workflow Node 的 **节点别名 / Node Alias** 主要用于 Workflow Visualizer 画布和 Workflow 详情，不会自动改写子 Job 在作业列表里的名称。因此，多个节点复用同一个 `DB_RU_AWX_RUN_ROOT` 时，作业列表看起来都会是 `DB_RU_AWX_RUN_ROOT`，这是复用通用 JT 的代价。
+
+推荐处理方式是保留 3~4 个通用 JT，但在每个节点的 Extra Vars 中增加 `step_name`，并由 playbook/runner 打印到 Job Output、目标主机日志和 result.json：
+
+```yaml
+---
+step_id: "01"
+step_name: "Step 01 - create backup dir"
+ru_run_mode: "mock"
+platform_mode: "awx_test"
+change_id: "AWX-TEST-FULL-MOCK-0001"
+allow_destructive_step: false
+approval_report_required: true
+```
+
+这样虽然作业列表仍显示 `DB_RU_AWX_RUN_ROOT`，但点进具体 Job 后，在输出里可以直接搜索：
+
+```text
+step_id=01
+step_name=Step 01 - create backup dir
+```
+
+目标主机日志和状态文件也会包含：
+
+```text
+/u01/patch1930/ru_automation/logs/step_01_*.log
+/u01/patch1930/ru_automation/state/step_01_result.json
+```
+
+如果强要求“作业列表名称本身就能看出 Step 01/02/03”，只有一个办法：为每个 step 创建独立 Job Template，例如 `DB_RU_STEP_01_CREATE_DIR`、`DB_RU_STEP_02_UNZIP_SCRIPT`。但这会回到 27 个 JT 的高维护模式，不推荐作为第一版测试方案。
+
+简洁建议：
+
+| 需求 | 推荐做法 |
+|---|---|
+| Workflow 画布可读 | 填 `节点别名 / Node Alias`。 |
+| Job Output / 日志可读 | 每个节点 Extra Vars 加 `step_name`。 |
+| Jobs 列表名称可读 | 只能创建更多按 step 命名的 JT，不推荐第一版使用。 |
+
 然后继续在 Step 01 节点后点击 **+**，添加 Step 02。Step 02 示例：
 
 | 字段 | 值 |
@@ -1942,6 +2007,7 @@ Step 02 的 Extra Variables：
 ```yaml
 ---
 step_id: "02"
+step_name: "Step 02 - unzip ru script"
 ru_run_mode: "mock"
 platform_mode: "awx_test"
 change_id: "AWX-TEST-FULL-MOCK-0001"
@@ -2011,6 +2077,7 @@ Step 99 Extra Variables：
 ```yaml
 ---
 step_id: "99"
+step_name: "Step 99 - collect failure logs"
 ru_run_mode: "mock"
 platform_mode: "awx_test"
 change_id: "AWX-TEST-FULL-MOCK-0001"
