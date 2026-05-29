@@ -1413,6 +1413,8 @@ chmod +x /root/db_ru_awx_test/ru_step_runner.sh
 ```bash
 scp /root/db_ru_awx_test/ru_step_runner.sh aap_ru@<node1-ip>:/u01/patch1930/ru_automation/bin/ru_step_runner.sh
 scp /root/db_ru_awx_test/ru_step_runner.sh aap_ru@<node2-ip>:/u01/patch1930/ru_automation/bin/ru_step_runner.sh
+ssh aap_ru@<node1-ip> 'chmod 755 /u01/patch1930/ru_automation/bin/ru_step_runner.sh && chmod 755 /u01 /u01/patch1930 /u01/patch1930/ru_automation /u01/patch1930/ru_automation/bin'
+ssh aap_ru@<node2-ip> 'chmod 755 /u01/patch1930/ru_automation/bin/ru_step_runner.sh && chmod 755 /u01 /u01/patch1930 /u01/patch1930/ru_automation /u01/patch1930/ru_automation/bin'
 ssh aap_ru@<node1-ip> 'chmod +x /u01/patch1930/ru_automation/bin/ru_step_runner.sh'
 ssh aap_ru@<node2-ip> 'chmod +x /u01/patch1930/ru_automation/bin/ru_step_runner.sh'
 ```
@@ -1466,6 +1468,8 @@ done
 ```bash
 scp /root/db_ru_awx_test/steps/step_*.sh aap_ru@<node1-ip>:/u01/patch1930/ru_automation/steps/
 scp /root/db_ru_awx_test/steps/step_*.sh aap_ru@<node2-ip>:/u01/patch1930/ru_automation/steps/
+ssh aap_ru@<node1-ip> 'chmod 755 /u01/patch1930/ru_automation/steps/step_*.sh && chmod 755 /u01/patch1930/ru_automation/steps'
+ssh aap_ru@<node2-ip> 'chmod 755 /u01/patch1930/ru_automation/steps/step_*.sh && chmod 755 /u01/patch1930/ru_automation/steps'
 ssh aap_ru@<node1-ip> 'chmod +x /u01/patch1930/ru_automation/steps/step_*.sh'
 ssh aap_ru@<node2-ip> 'chmod +x /u01/patch1930/ru_automation/steps/step_*.sh'
 ```
@@ -1544,6 +1548,122 @@ approval_report_required: false
 2. Job Output 打印 runtime parameters；
 3. 目标主机生成 `logs/step_00_*.log`；
 4. 目标主机生成 `state/step_00.done` 和 `state/step_00_result.json`。
+
+### 9.6 `ru_step_runner.sh: Permission denied` 排查
+
+如果 AWX Job 返回类似：
+
+```text
+rc: 126
+stderr: /bin/bash: line 1: /u01/patch1930/ru_automation/bin/ru_step_runner.sh: Permission denied
+```
+
+先看结论：这不是 playbook 语法问题。`rc=126` 表示文件找到了，但当前执行用户没有权限执行。即使你用 root 看到文件是：
+
+```text
+-rwxr-xr-x root root ... ru_step_runner.sh
+```
+
+也仍然可能失败，因为 AWX 当前 playbook 里 `become: false`，实际执行用户通常是 Credential 中的 `aap_ru`。除了脚本文件本身有 `x` 权限外，`aap_ru` 还必须对每一级父目录都有 `x` 穿越权限，并且文件系统不能以 `noexec` 方式挂载。
+
+#### 第 1 步：确认 AWX 实际使用哪个用户执行
+
+**执行位置：node1/node2 目标主机，或 AWX Job Output。**
+
+在目标主机上用与 AWX 相同的账号测试：
+
+```bash
+ssh aap_ru@<node1-ip> 'whoami; id; test -x /u01/patch1930/ru_automation/bin/ru_step_runner.sh && echo runner_executable || echo runner_not_executable'
+ssh aap_ru@<node2-ip> 'whoami; id; test -x /u01/patch1930/ru_automation/bin/ru_step_runner.sh && echo runner_executable || echo runner_not_executable'
+```
+
+如果这里输出 `runner_not_executable`，AWX 一定也会报 Permission denied。
+
+#### 第 2 步：检查父目录权限
+
+**执行位置：node1/node2 目标主机，使用 root 执行。**
+
+```bash
+namei -l /u01/patch1930/ru_automation/bin/ru_step_runner.sh
+ls -ld /u01 /u01/patch1930 /u01/patch1930/ru_automation /u01/patch1930/ru_automation/bin
+ls -l /u01/patch1930/ru_automation/bin/ru_step_runner.sh
+```
+
+重点看每一级目录是否对 `aap_ru` 可穿越。常见问题是目录类似：
+
+```text
+drwxr-x--- root root /u01/patch1930/ru_automation
+```
+
+这种情况下，脚本文件即使是 `755`，`aap_ru` 也进不去目录，会报 `Permission denied`。
+
+#### 第 3 步：按测试阶段推荐权限修复
+
+**执行位置：node1/node2 目标主机，使用 root 执行。**
+
+Mock/Smoke 阶段推荐让 `aap_ru` 拥有整个自动化目录：
+
+```bash
+chown -R aap_ru:aap_ru /u01/patch1930/ru_automation
+chmod 755 /u01 /u01/patch1930 /u01/patch1930/ru_automation /u01/patch1930/ru_automation/bin /u01/patch1930/ru_automation/steps
+chmod 755 /u01/patch1930/ru_automation/bin/ru_step_runner.sh
+chmod 755 /u01/patch1930/ru_automation/steps/step_*.sh
+```
+
+如果现场不允许修改 `/u01` 或 `/u01/patch1930` 权限，至少要保证 `aap_ru` 所在组对这些目录有 `x` 权限，或使用 ACL 精确授权：
+
+```bash
+setfacl -m u:aap_ru:rx /u01 /u01/patch1930 /u01/patch1930/ru_automation /u01/patch1930/ru_automation/bin /u01/patch1930/ru_automation/steps
+setfacl -m u:aap_ru:rx /u01/patch1930/ru_automation/bin/ru_step_runner.sh
+setfacl -m u:aap_ru:rx /u01/patch1930/ru_automation/steps/step_*.sh
+```
+
+#### 第 4 步：检查是否是 `noexec` 挂载
+
+**执行位置：node1/node2 目标主机，使用 root 执行。**
+
+```bash
+findmnt -T /u01/patch1930/ru_automation/bin/ru_step_runner.sh -o TARGET,OPTIONS
+mount | grep ' /u01 '
+```
+
+如果挂载参数里有 `noexec`，即使文件权限是 `755` 也不能直接执行脚本。处理方式有两个：
+
+1. 推荐：把 `ru_automation` 放到允许执行的文件系统；
+2. 临时验证：把 playbook 命令改为用 bash 解释器显式执行。
+
+临时验证写法如下：
+
+```bash
+bash /u01/patch1930/ru_automation/bin/ru_step_runner.sh --step-id "00" --run-mode "mock" --platform-mode "awx_test" --change-id "AWX-TEST-RUNNER-0001" --allow-destructive-step "false" --approval-report-required "false"
+```
+
+如果 `bash script.sh` 可以执行，而直接 `/path/script.sh` 不行，基本就是 `noexec` 或执行位/目录穿越问题。
+
+#### 第 5 步：从目标主机模拟 AWX 执行
+
+**执行位置：node1/node2 目标主机，使用 root 或能切换用户的账号执行。**
+
+```bash
+su - aap_ru -c '/u01/patch1930/ru_automation/bin/ru_step_runner.sh --step-id "00" --run-mode "mock" --platform-mode "awx_test" --change-id "LOCAL-PERMISSION-TEST" --allow-destructive-step "false" --approval-report-required "false"'
+```
+
+如果该命令成功，再回到 AWX 重新运行 9.5 单步 runner 验证。
+
+#### 第 6 步：如果仍失败，收集证据
+
+**执行位置：node1/node2 目标主机。**
+
+```bash
+whoami
+id aap_ru
+namei -l /u01/patch1930/ru_automation/bin/ru_step_runner.sh
+getfacl /u01 /u01/patch1930 /u01/patch1930/ru_automation /u01/patch1930/ru_automation/bin /u01/patch1930/ru_automation/bin/ru_step_runner.sh 2>/dev/null || true
+findmnt -T /u01/patch1930/ru_automation/bin/ru_step_runner.sh -o TARGET,OPTIONS
+ls -lZ /u01/patch1930/ru_automation/bin/ru_step_runner.sh 2>/dev/null || true
+```
+
+如果 SELinux 开启且 `ls -lZ` 显示上下文异常，可以先在测试环境临时验证是否为 SELinux 拦截，再按客户安全规范修复上下文；不要在生产中直接长期关闭 SELinux。
 
 ---
 
