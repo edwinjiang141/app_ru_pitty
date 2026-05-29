@@ -1,3 +1,4 @@
+# AWX 无 Git 场景下 DB RU Runbook 全流程测试实施计划
 # AWX 无 Git 场景下 DB RU Runbook 全流程测试实施计划- v1
 
 > 适用状态：k3s 单节点、AWX Operator、AWX Web/Task/EE/PostgreSQL/Redis 等 Pod 已经正常 Running；当前阶段准备开始验证 `AAP_DB_RU_命令式Runbook完整开发实施方案_v3_AWX验证适配版.md` 中的 DB RU 自动化方案。
@@ -223,6 +224,48 @@ kubectl -n awx run ee-debug --rm -it --restart=Never \
 
 不要在 AWX 测试阶段保存生产 root 密码。真实生产迁移到 AAP 时，Credential 需要重新创建并按客户安全规范审批。
 
+### 5.2 生成 AWX 测试 SSH 密钥对
+
+`authorized_keys` 中要粘贴的“AWX 测试 SSH 公钥”不是 AWX 自动生成的，需要由实施人员在安全的管理机或 k3s 节点上生成一对专用于本次 AWX 测试的 SSH key。推荐在 k3s 节点生成并保存在测试归档目录中：
+
+```bash
+mkdir -p /root/db_ru_awx_test/ssh
+ssh-keygen -t ed25519 \
+  -f /root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519 \
+  -C "aap_ru_awx_test_$(date +%Y%m%d)" \
+  -N ''
+chmod 600 /root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519
+chmod 644 /root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519.pub
+```
+
+生成后会得到两个文件：
+
+| 文件 | 用途 | 放置位置 |
+|---|---|---|
+| `/root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519.pub` | 公钥 | 追加到 node1/node2 的 `/home/aap_ru/.ssh/authorized_keys`。 |
+| `/root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519` | 私钥 | 粘贴到 AWX Machine Credential 的 `SSH Private Key` 字段。 |
+
+查看需要粘贴到目标主机的公钥内容：
+
+```bash
+cat /root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519.pub
+```
+
+查看需要粘贴到 AWX Credential 的私钥内容：
+
+```bash
+cat /root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519
+```
+
+安全要求：
+
+1. 私钥只进入 AWX Credential，不要写入 Project、Playbook、step 脚本或目标主机文件；
+2. 如果企业已有专用自动化密钥，也可以复用企业批准的公钥/私钥，但仍必须满足“公钥放目标主机、私钥放 AWX Credential”的对应关系；
+3. 测试结束后，如果该密钥只是临时测试用途，需要从 node1/node2 的 `authorized_keys` 中删除对应公钥，并删除或归档本地私钥。
+
+### 5.3 目标主机创建测试账号
+
+在 node1/node2 上执行，其中 `<粘贴 AWX 测试 SSH 公钥>` 来自上一节生成的 `.pub` 文件：
 ### 5.2 目标主机创建测试账号
 
 在 node1/node2 上执行：
@@ -240,6 +283,9 @@ chown -R aap_ru:aap_ru /home/aap_ru/.ssh
 
 如果使用密码登录，也可以先跳过 SSH key，但建议尽快改成 key-based 方式。
 
+### 5.4 sudoers 分阶段配置
+
+#### 5.4.1 Smoke/Mock 阶段
 ### 5.3 sudoers 分阶段配置
 
 #### 5.3.1 Smoke/Mock 阶段
@@ -254,6 +300,7 @@ chmod 440 /etc/sudoers.d/aap_ru_db_ru_mock
 visudo -cf /etc/sudoers.d/aap_ru_db_ru_mock
 ```
 
+#### 5.4.2 Check-only 阶段
 #### 5.3.2 Check-only 阶段
 
 允许切换到 grid/oracle 执行非破坏性检查命令。路径以现场实际为准：
@@ -269,6 +316,7 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_check
 
 > 注意：Check-only 阶段只放行非破坏性检查；真实阶段必须按实际命令重新做最小化授权评审。
 
+#### 5.4.3 UAT Real 阶段
 #### 5.3.3 UAT Real 阶段
 
 真实 DB RU 阶段需要按每个 step 实际命令最小化授权，不建议直接给 `ALL=(ALL) NOPASSWD: ALL`。如果测试窗口紧张，至少应做到：
@@ -279,6 +327,7 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_check
 4. 所有授权命令路径使用绝对路径；
 5. `rm -rf`、`srvctl stop`、`datapatch`、home switch 等高风险命令由 runner 的 `allow_destructive_step` 和 Summary/Approval 双重控制。
 
+### 5.5 创建自动化目录
 ### 5.4 创建自动化目录
 
 在 node1/node2 上创建目录：
@@ -497,6 +546,7 @@ Resources -> Credentials -> Add
 | Organization | `DB_RU_Test_Org` |
 | Credential Type | Machine |
 | Username | `aap_ru` |
+| SSH Private Key | 粘贴 `/root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519` 的完整私钥内容，必须包含 `-----BEGIN OPENSSH PRIVATE KEY-----` 和 `-----END OPENSSH PRIVATE KEY-----` |
 | SSH Private Key | `<粘贴私钥>` |
 | Privilege Escalation Method | `sudo`，如需要 |
 | Privilege Escalation Username | `root`，如需要 |
