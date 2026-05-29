@@ -71,12 +71,51 @@ AWX Workflow Job Template
 
 每一阶段都必须有明确通过标准。任一阶段不通过，不进入下一阶段。
 
+## 2.1 执行位置约定与傻瓜式总清单
+
+为避免实施时不知道命令应该在哪台机器执行，本文后续所有可执行动作都按以下位置标识：
+
+| 标识 | 含义 | 典型登录方式 | 说明 |
+|---|---|---|---|
+| **k3s 节点** | 已部署 k3s/AWX 的宿主机 | 以 `root` 或具备 `kubectl` 权限的用户 SSH 登录 | 执行 `kubectl`、生成测试文件、`kubectl cp`、创建本地归档目录。 |
+| **AWX UI** | 浏览器访问 AWX Web 控制台 | 浏览器登录 AWX | 创建 Organization、Inventory、Credential、Job Template、Workflow、Approval。 |
+| **AWX Task Pod** | AWX 的 task 容器 | 从 k3s 节点用 `kubectl exec` 进入 | 检查或写入 `/var/lib/awx/projects` Manual Project。 |
+| **AWX EE/调试 Pod** | AWX Job 实际执行 Ansible 的容器网络环境 | 从 k3s 节点用 `kubectl run` 创建临时 Pod | 验证 Pod 网络能否访问外部 node1/node2。 |
+| **node1/node2 目标主机** | k3s 外部 RAC/DB 主机 | 直接 SSH 到 node1/node2 | 创建 `aap_ru`、配置 `authorized_keys`、sudoers、自动化目录。 |
+| **primary_exec_node** | 主控执行节点，通常是 node1 | 通过 AWX Limit 或直接 SSH 到 node1 | 执行 precheck、datapatch、Summary/Gate、CRS 对比等单点步骤。 |
+
+傻瓜式执行顺序如下；如果某一步失败，先修复该步骤，不要跳到后面的真实升级步骤：
+
+| 顺序 | 执行位置 | 操作 | 产出/通过标准 |
+|---:|---|---|---|
+| 0 | k3s 节点 | 记录 `kubectl get nodes/pods/svc/pvc` 等 AWX/k3s 基线。 | 明确 AWX namespace、AWX Task Pod、AWX Web 访问方式。 |
+| 1 | k3s 节点 | 创建 `/root/db_ru_awx_test/evidence` 测试归档目录。 | 后续命令输出、截图、Job Output 有统一归档位置。 |
+| 2 | k3s 节点 | 从宿主机测试到 node1/node2 的 ping 和 22 端口。 | k3s 节点能访问目标主机。 |
+| 3 | AWX EE/调试 Pod | 从 Pod 网络测试到 node1/node2 的 22 端口。 | AWX Job 所在网络能访问目标主机。 |
+| 4 | k3s 节点或安全管理机 | 生成 AWX 测试 SSH key pair。 | 得到 `.pub` 公钥和私钥。 |
+| 5 | node1/node2 目标主机 | 创建 `aap_ru` 用户，把 `.pub` 公钥追加到 `authorized_keys`。 | `aap_ru` 可用该 key 登录 node1/node2。 |
+| 6 | node1/node2 目标主机 | 配置 Smoke/Mock 阶段 sudoers 和 `/u01/patch1930/ru_automation` 目录。 | 目录存在、权限正确、sudoers 语法检查通过。 |
+| 7 | k3s 节点 + AWX Task Pod | 手工创建 AWX Manual Project 目录并复制 `run_ru_step.yml`。 | AWX Project 能识别 `playbooks/run_ru_step.yml`。 |
+| 8 | AWX UI | 创建 Organization、Inventory、Host、Group、Credential。 | Inventory 能表达 `db_nodes/node1/node2/primary_exec_node`，Credential 使用第 4 步私钥。 |
+| 9 | AWX UI | 创建 3~4 个通用 Job Template，开启 Variables/Limit Prompt on Launch。 | 单个 JT 可以 Launch。 |
+| 10 | k3s 节点 + node1/node2 | 生成并复制 `ru_step_runner.sh`、mock step、Summary step。 | 目标主机有 runner 和 step 脚本。 |
+| 11 | AWX UI | 单独运行 `DB_RU_AWX_RUN_CHECK` 的 `step_id=00`。 | AWX 能 SSH 到目标主机并生成日志/state。 |
+| 12 | AWX UI | 创建完整 Workflow：27 step + 6 Summary/Gate + 6 Approval + Step 99。 | Workflow 拓扑和 Limit/Extra Vars 完整。 |
+| 13 | AWX UI | 以 `mock` 模式完整运行 Workflow。 | 全链路成功，Approval 可暂停和放行。 |
+| 14 | AWX UI | 验证 Approval Deny/Timeout/无权限审批失败。 | 失败后不进入后续高风险 step。 |
+| 15 | AWX UI + node1/node2 | 替换检查类脚本并以 `check` 模式运行。 | 只执行非破坏性 Oracle/Grid 检查。 |
+| 16 | AWX UI + node1/node2 | 分批替换真实 step，在 UAT RAC 以 `real` 模式执行。 | 测试 RAC 完整 DB RU 成功或按预案中断/接管。 |
+| 17 | k3s 节点 + node1/node2 + AWX UI | 归档 AWX Job Output、目标主机日志、状态文件、审批报告、截图。 | 形成 AAP 回迁依据。 |
+
 ---
 
 ## 3. 阶段 0：记录 AWX/k3s 当前基线
 
 ### 3.1 Kubernetes 侧检查
 
+**执行位置：k3s 节点。**
+
+执行：
 在 k3s 节点执行：
 
 ```bash
@@ -115,6 +154,9 @@ kubectl get ingress -A
 
 ### 3.3 结果归档目录
 
+**执行位置：k3s 节点。**
+
+创建本次测试归档目录：
 建议在 k3s 节点创建一个本次测试归档目录：
 
 ```bash
@@ -152,6 +194,9 @@ AWX Job 启动
 
 ### 4.3 从 k3s 节点测试网络
 
+**执行位置：k3s 节点。**
+
+执行：
 在 k3s 节点执行：
 
 ```bash
@@ -165,6 +210,8 @@ nc -vz <node2-ip> 22
 
 ### 4.4 从 AWX Task Pod 或临时调试 Pod 测试网络
 
+**执行位置：k3s 节点。**
+
 优先使用临时调试 Pod，避免修改 AWX 正式 Pod：
 
 ```bash
@@ -172,6 +219,8 @@ kubectl -n awx run net-debug --rm -it --restart=Never \
   --image=registry.access.redhat.com/ubi8/ubi:latest \
   -- bash
 ```
+
+**执行位置：AWX EE/调试 Pod 内部。**
 
 进入后执行：
 
@@ -184,11 +233,15 @@ bash -c '</dev/tcp/<node1-ip>/22' && echo node1_ssh_port_ok
 bash -c '</dev/tcp/<node2-ip>/22' && echo node2_ssh_port_ok
 ```
 
+**执行位置：k3s 节点。**
+
 如果镜像里没有 `bash`、`ip`、`getent` 等工具，可改用 AWX EE 镜像创建调试 Pod，镜像名称以实际 AWX Execution Environment 为准：
 
 ```bash
 kubectl -n awx get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{range .spec.containers[*]}{.image}{"\n"}{end}{end}'
 ```
+
+**执行位置：k3s 节点。**
 
 然后：
 
@@ -226,6 +279,10 @@ kubectl -n awx run ee-debug --rm -it --restart=Never \
 
 ### 5.2 生成 AWX 测试 SSH 密钥对
 
+`authorized_keys` 中要粘贴的“AWX 测试 SSH 公钥”不是 AWX 自动生成的，需要由实施人员在安全的管理机或 k3s 节点上生成一对专用于本次 AWX 测试的 SSH key。推荐在 k3s 节点生成并保存在测试归档目录中。
+
+**执行位置：k3s 节点，或者企业批准的安全管理机；以下命令以 k3s 节点为例。**
+
 `authorized_keys` 中要粘贴的“AWX 测试 SSH 公钥”不是 AWX 自动生成的，需要由实施人员在安全的管理机或 k3s 节点上生成一对专用于本次 AWX 测试的 SSH key。推荐在 k3s 节点生成并保存在测试归档目录中：
 
 ```bash
@@ -245,11 +302,15 @@ chmod 644 /root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519.pub
 | `/root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519.pub` | 公钥 | 追加到 node1/node2 的 `/home/aap_ru/.ssh/authorized_keys`。 |
 | `/root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519` | 私钥 | 粘贴到 AWX Machine Credential 的 `SSH Private Key` 字段。 |
 
+**执行位置：k3s 节点，或第 5.2 节生成密钥的安全管理机。**
+
 查看需要粘贴到目标主机的公钥内容：
 
 ```bash
 cat /root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519.pub
 ```
+
+**执行位置：k3s 节点，或第 5.2 节生成密钥的安全管理机。**
 
 查看需要粘贴到 AWX Credential 的私钥内容：
 
@@ -265,6 +326,9 @@ cat /root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519
 
 ### 5.3 目标主机创建测试账号
 
+**执行位置：node1 和 node2 目标主机，使用 root 或具备创建用户权限的系统管理员账号分别执行。**
+
+在 node1/node2 上执行，其中 `<粘贴 AWX 测试 SSH 公钥>` 来自上一节生成的 `.pub` 文件：
 在 node1/node2 上执行，其中 `<粘贴 AWX 测试 SSH 公钥>` 来自上一节生成的 `.pub` 文件：
 ### 5.2 目标主机创建测试账号
 
@@ -286,6 +350,8 @@ chown -R aap_ru:aap_ru /home/aap_ru/.ssh
 ### 5.4 sudoers 分阶段配置
 
 #### 5.4.1 Smoke/Mock 阶段
+
+**执行位置：node1 和 node2 目标主机，使用 root 分别执行。**
 ### 5.3 sudoers 分阶段配置
 
 #### 5.3.1 Smoke/Mock 阶段
@@ -301,6 +367,8 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_mock
 ```
 
 #### 5.4.2 Check-only 阶段
+
+**执行位置：node1 和 node2 目标主机，使用 root 分别执行。**
 #### 5.3.2 Check-only 阶段
 
 允许切换到 grid/oracle 执行非破坏性检查命令。路径以现场实际为准：
@@ -328,6 +396,8 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_check
 5. `rm -rf`、`srvctl stop`、`datapatch`、home switch 等高风险命令由 runner 的 `allow_destructive_step` 和 Summary/Approval 双重控制。
 
 ### 5.5 创建自动化目录
+
+**执行位置：node1 和 node2 目标主机，使用 root 分别执行。**
 ### 5.4 创建自动化目录
 
 在 node1/node2 上创建目录：
@@ -376,6 +446,8 @@ AWX 支持 Manual 类型 Project。手动 Project 的内容需要放在 AWX Proj
 /var/lib/awx/projects
 ```
 
+**执行位置：k3s 节点。**
+
 先确认 AWX Task Pod 的项目目录：
 
 ```bash
@@ -383,11 +455,15 @@ kubectl -n awx get pods
 kubectl -n awx exec -it <awx-task-pod> -- bash -lc 'pwd; ls -ld /var/lib/awx/projects; mount | grep projects || true'
 ```
 
+**执行位置：k3s 节点，通过 `kubectl exec` 在 AWX Task Pod 内创建目录。**
+
 如果存在 `/var/lib/awx/projects`，创建项目目录：
 
 ```bash
 kubectl -n awx exec -it <awx-task-pod> -- bash -lc 'mkdir -p /var/lib/awx/projects/db-ru-automation/playbooks'
 ```
+
+**执行位置：k3s 节点。**
 
 从 k3s 节点复制本地项目文件进去：
 
@@ -452,6 +528,8 @@ kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
   <awx-task-pod>:/var/lib/awx/projects/db-ru-automation/playbooks/run_ru_step.yml
 ```
 
+**执行位置：AWX UI，Resources -> Projects -> Add。**
+
 在 AWX UI 创建 Project：
 
 | 字段 | 值 |
@@ -460,6 +538,8 @@ kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
 | Organization | `DB_RU_Test_Org` |
 | Source Control Type | `Manual` |
 | Playbook Directory | `db-ru-automation` |
+
+**执行位置：k3s 节点。**
 
 如果 UI 不显示手工目录，检查：
 
@@ -477,6 +557,8 @@ kubectl -n awx exec -it <awx-task-pod> -- bash -lc 'find /var/lib/awx/projects -
 
 ### 7.1 Organization
 
+**执行位置：AWX UI，使用浏览器登录 AWX。**
+
 AWX UI：
 
 ```text
@@ -490,6 +572,8 @@ Access Management -> Organizations -> Add
 | Name | `DB_RU_Test_Org` |
 
 ### 7.2 Inventory
+
+**执行位置：AWX UI，使用浏览器登录 AWX。**
 
 AWX UI：
 
@@ -519,6 +603,8 @@ DB_RU_AWX_TEST_Inventory
 | `node2` | `node2` | 节点二滚动升级 |
 | `primary_exec_node` | `node1` | precheck、datapatch、summary、CRS 对比 |
 
+**执行位置：AWX UI 的 Inventory Variables 编辑框。**
+
 Inventory Variables 建议：
 
 ```yaml
@@ -531,6 +617,8 @@ ru_base_dir: "/u01/patch1930/ru_automation"
 > 测试阶段可以关闭 StrictHostKeyChecking；迁移到 AAP 或正式 UAT 时建议改为预置 known_hosts。
 
 ### 7.3 Credential
+
+**执行位置：AWX UI，使用浏览器登录 AWX。**
 
 AWX UI：
 
@@ -593,12 +681,16 @@ DB_RU_AWX_oracle_credential
 
 ### 8.3 单步 Smoke 测试
 
+**执行位置：AWX UI，打开 `DB_RU_AWX_RUN_CHECK` 并点击 Launch。**
+
 先在 AWX UI 直接 Launch `DB_RU_AWX_RUN_CHECK`：
 
 | Prompt 字段 | 值 |
 |---|---|
 | Limit | `primary_exec_node` |
 | Extra Vars | 见下 |
+
+**执行位置：AWX UI，本段 YAML 填入 Launch Prompt 的 Extra Vars。**
 
 ```yaml
 step_id: "00"
@@ -628,6 +720,8 @@ approval_report_required: false
 7. step 失败时返回非 0，让 AWX Workflow 自动中断或进入失败分支。
 
 ### 9.2 初始 mock runner
+
+**执行位置：k3s 节点。**
 
 在 k3s 节点生成 runner：
 
@@ -740,6 +834,8 @@ EOF_RUNNER
 chmod +x /root/db_ru_awx_test/ru_step_runner.sh
 ```
 
+**执行位置：k3s 节点；命令会通过 SSH/SCP 写入 node1/node2 目标主机。**
+
 复制到 node1/node2：
 
 ```bash
@@ -750,6 +846,8 @@ ssh aap_ru@<node2-ip> 'chmod +x /u01/patch1930/ru_automation/bin/ru_step_runner.
 ```
 
 ### 9.3 生成 27 个 mock step
+
+**执行位置：k3s 节点。**
 
 ```bash
 mkdir -p /root/db_ru_awx_test/steps
@@ -789,6 +887,8 @@ EOF_STEP
 done
 ```
 
+**执行位置：k3s 节点；命令会通过 SSH/SCP 写入 node1/node2 目标主机。**
+
 复制到目标主机：
 
 ```bash
@@ -801,6 +901,8 @@ ssh aap_ru@<node2-ip> 'chmod +x /u01/patch1930/ru_automation/steps/step_*.sh'
 ### 9.4 生成 6 个 Summary/Gate 脚本
 
 Summary 脚本作为特殊 step：`05A/10A/14A/18A/19A/24A`。
+
+**执行位置：k3s 节点；命令会生成脚本并通过 SCP 写入 node1/node2 目标主机。**
 
 ```bash
 for step in 05A 10A 14A 18A 19A 24A; do
@@ -851,6 +953,8 @@ scp /root/db_ru_awx_test/steps/step_05A.sh /root/db_ru_awx_test/steps/step_10A.s
 
 ### 9.5 单步 runner 验证
 
+**执行位置：AWX UI，Launch `DB_RU_AWX_RUN_CHECK` 时填写 Prompt。**
+
 在 AWX 直接运行 `DB_RU_AWX_RUN_CHECK`：
 
 ```yaml
@@ -874,6 +978,8 @@ approval_report_required: false
 ## 10. 阶段 7：创建完整 Workflow
 
 ### 10.1 Workflow 名称
+
+**执行位置：AWX UI，Resources -> Templates -> Add -> Workflow Job Template。**
 
 创建：
 
@@ -946,6 +1052,8 @@ DB_RU_AWX_19_30_Rolling_Upgrade_TEST
 
 ### 10.4 Extra Vars 传递方式
 
+**执行位置：AWX UI，Workflow Visualizer 中每个 Workflow Node 的 Prompt/Extra Vars。**
+
 每个节点除 `step_id` 不同外，建议统一包含：
 
 ```yaml
@@ -955,6 +1063,8 @@ change_id: "AWX-TEST-CHG0001"
 allow_destructive_step: false
 approval_report_required: true
 ```
+
+**执行位置：AWX UI，Workflow Visualizer 中每个 Workflow Node 的 Prompt/Extra Vars。**
 
 如果 AWX Workflow 节点无法直接引用 Survey 变量，则在每个节点手工填写固定值。第一轮 Full Mock 可以统一写死：
 
@@ -998,6 +1108,8 @@ Step 99 配置：
 ## 11. 阶段 8：执行 Full Mock 全流程
 
 ### 11.1 启动参数
+
+**执行位置：AWX UI，打开 `DB_RU_AWX_19_30_Rolling_Upgrade_TEST` 并点击 Launch。**
 
 启动 Workflow：
 
@@ -1084,6 +1196,8 @@ rm -rf
 
 ### 12.3 启动参数
 
+**执行位置：AWX UI，Launch Workflow 时填写 Survey 或 Extra Vars。**
+
 ```yaml
 ru_run_mode: "check"
 platform_mode: "awx_test"
@@ -1135,6 +1249,8 @@ approval_report_required: true
 
 ### 13.3 UAT Real 启动参数
 
+**执行位置：AWX UI，Launch Workflow 时填写 Survey 或 Extra Vars；仅在 UAT 变更窗口执行。**
+
 ```yaml
 ru_run_mode: "real"
 platform_mode: "awx_test"
@@ -1161,6 +1277,8 @@ approval_report_required: true
 ### 14.1 不建议直接修改 AWX Pod 内文件作为长期方案
 
 手工 Project 文件复制到 AWX Pod 适合当前无 Git 测试，但它依赖 AWX Project PVC 或容器内目录持久性。需要确认：
+
+**执行位置：k3s 节点。**
 
 ```bash
 kubectl -n awx exec -it <awx-task-pod> -- bash -lc 'df -h /var/lib/awx/projects; mount | grep awx'
