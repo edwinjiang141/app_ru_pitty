@@ -1688,6 +1688,205 @@ DB_RU_AWX_19_30_Rolling_Upgrade_TEST
 | Allow Simultaneous | 关闭 |
 | Survey | 可选，建议用于统一输入 `change_id`、`ru_run_mode` |
 
+### 10.2 创建 Workflow Template 表单逐项填写
+
+**执行位置：AWX UI，中文界面：`资源 -> 模板 -> 添加 -> 添加工作流模板`；英文界面：`Resources -> Templates -> Add -> Add workflow template`。**
+
+你截图中的页面是“创建新工作流模板 / Create new workflow template”。按下面填写即可：
+
+| 中文字段 | 英文字段 | 是否必填 | 建议值 | 说明 |
+|---|---|---|---|---|
+| 名称 | Name | 必填 | `DB_RU_AWX_19_30_Rolling_Upgrade_TEST` | Workflow 名称。 |
+| 描述 | Description | 可选 | `AWX DB RU full mock workflow test` | 可不填。 |
+| 机构 | Organization | 必填 | `DB_RU_Test_Org` | 选择前面创建的 Organization。 |
+| 清单 | Inventory | 可选 | `DB_RU_AWX_TEST_Inventory` | 建议选择。节点仍会用各自 Limit 控制范围。 |
+| 限制 | Limit | 不填 | 留空 | 不要在 Workflow 总入口限制，避免覆盖节点 Limit。 |
+| 源控制分支 | Source Control Branch | 不填 | 留空 | Manual Project 场景不需要。 |
+| 标签 | Labels | 可选 | 留空 | 可不填。 |
+| 变量 | Variables | 可选 | 见下方 YAML | 可以先写全局默认变量，也可以只在节点 Extra Vars 写。 |
+| 作业标签 | Job Tags | 不填 | 留空 | 本方案不用 tags 控制。 |
+| 跳过标签 | Skip Tags | 不填 | 留空 | 本方案不用 tags 控制。 |
+| 启动时提示 | Prompt on Launch | 不建议勾选 | 第一轮先不勾 | 初期为了减少复杂度，先把变量写死到节点 Extra Vars。 |
+| 启用 Webhook | Enable Webhook | 不勾选 | 关闭 | 本测试不需要 Webhook。 |
+| 启用并发作业 | Enable Concurrent Jobs / Allow Simultaneous | 不勾选 | 关闭 | DB RU 测试必须禁止并发。 |
+
+如果要在 Workflow Template 的“变量 / Variables”里放默认值，可以填写：
+
+```yaml
+---
+ru_run_mode: mock
+platform_mode: awx_test
+change_id: AWX-TEST-FULL-MOCK-0001
+allow_destructive_step: false
+approval_report_required: true
+```
+
+然后点击 **保存 / Save**。保存后才能进入工作流可视化工具。
+
+### 10.3 建议 Survey（可选，第一轮可先跳过）
+
+**执行位置：AWX UI，Workflow Template 详情页中的 `调查 / Survey`。**
+
+第一轮 Full Mock 为了减少变量传递问题，可以先不创建 Survey，直接在每个 Workflow Node 的 Extra Vars 中写固定值。等 Full Mock 成功后，再增加 Survey。
+
+如果要创建 Survey，建议字段如下：
+
+| 中文提示 | 变量 | 类型 | 默认值 | 说明 |
+|---|---|---|---|---|
+| 变更编号 | `change_id` | 文本 / Text | `AWX-TEST-CHG0001` | 本次测试/变更编号。 |
+| 运行模式 | `ru_run_mode` | 多选一 / Multiple Choice | `mock` | 可选 `mock`、`check`、`real`。 |
+| 平台模式 | `platform_mode` | 多选一 / Multiple Choice | `awx_test` | 当前固定为 AWX 测试。 |
+| 是否允许破坏性步骤 | `allow_destructive_step` | 多选一 / Multiple Choice | `false` | real 模式高风险开关。 |
+| 是否要求审批报告 | `approval_report_required` | 多选一 / Multiple Choice | `true` | 是否要求 Summary/Gate 报告。 |
+
+### 10.4 进入工作流可视化工具
+
+**执行位置：AWX UI，Workflow Template 保存后。**
+
+中文界面常见路径：
+
+```text
+资源 -> 模板 -> DB_RU_AWX_19_30_Rolling_Upgrade_TEST -> 可视化工具 / 工作流可视化工具
+```
+
+英文界面常见路径：
+
+```text
+Resources -> Templates -> DB_RU_AWX_19_30_Rolling_Upgrade_TEST -> Visualizer
+```
+
+进入后通常会看到一个开始节点或空白画布。后续所有 step 都是在这里通过 **添加节点 / Add Node** 完成。
+
+### 10.5 添加 Job 节点的傻瓜式操作
+
+**执行位置：AWX UI，Workflow Visualizer / 工作流可视化工具。**
+
+每个执行 step 的节点都按下面方式创建。以 Step 01 为例：
+
+1. 点击开始节点旁边的 **+**，或点击画布上的 **添加节点 / Add Node**；
+2. 节点类型选择 **作业模板 / Job Template**；
+3. 选择 Job Template：`DB_RU_AWX_RUN_ROOT`；
+4. 如果出现收敛方式 / Convergence，保持默认 **任意 / Any**；
+5. 如果出现分支类型，选择 **成功 / On Success**，表示上一步成功才进入下一步；
+6. 在 Prompt 页面填写：
+   - **限制 / Limit**：`db_nodes`；
+   - **额外变量 / Extra Variables**：见下方 YAML；
+7. 保存节点。
+
+Step 01 的 Extra Variables：
+
+```yaml
+---
+step_id: "01"
+ru_run_mode: "mock"
+platform_mode: "awx_test"
+change_id: "AWX-TEST-FULL-MOCK-0001"
+allow_destructive_step: false
+approval_report_required: true
+```
+
+然后继续在 Step 01 节点后点击 **+**，添加 Step 02。Step 02 示例：
+
+| 字段 | 值 |
+|---|---|
+| 节点类型 / Node Type | 作业模板 / Job Template |
+| 作业模板 / Job Template | `DB_RU_AWX_RUN_ROOT` |
+| 分支 / Link Type | 成功 / On Success |
+| 限制 / Limit | `primary_exec_node` |
+| 额外变量 / Extra Variables | `step_id: "02"` 加公共变量 |
+
+Step 02 的 Extra Variables：
+
+```yaml
+---
+step_id: "02"
+ru_run_mode: "mock"
+platform_mode: "awx_test"
+change_id: "AWX-TEST-FULL-MOCK-0001"
+allow_destructive_step: false
+approval_report_required: true
+```
+
+后续 Step 03～Step 27 都按同样方式添加，只是 Job Template、Limit、`step_id` 不同，具体见 10.8 表格。
+
+> 关键提醒：只有前面创建 Job Template 时启用了 **变量：启动时提示 / Variables: Prompt on Launch** 和 **限制：启动时提示 / Limit: Prompt on Launch**，这里的 Workflow Node 才能填写不同的 Extra Vars 和 Limit。
+
+### 10.6 添加 Approval 节点的傻瓜式操作
+
+**执行位置：AWX UI，Workflow Visualizer / 工作流可视化工具。**
+
+Approval 节点要加在 Summary/Gate 节点后面。例如 Approval A 的位置是：
+
+```text
+Step 05 -> Step 05A Summary -> Approval A -> Step 06
+```
+
+添加 Approval A：
+
+1. 在 `Step 05A Approval A Summary` 节点后点击 **+**；
+2. 节点类型选择 **审批 / Approval**；
+3. 名称 / Name 填写：`Approval A - backup completed confirm`；
+4. 描述 / Description 填写：`确认 precheck 和 backup 摘要通过后继续 Step 06`；
+5. 超时 / Timeout 可先留空或设置较长时间，例如 `86400` 秒；
+6. 保存。
+
+Approval 节点后继续添加下一个 Job 节点时，分支选择：
+
+```text
+成功 / On Success
+```
+
+含义是：审批人点击 Approve/批准 后，Workflow 才进入下一步。
+
+如果审批人点击 Deny/拒绝 或超时，Workflow 会走 Failure 路径；关键 Approval 的 Failure 路径建议连接到 Step 99。
+
+6 个 Approval 节点建议名称：
+
+| Approval | 中文用途 | 建议名称 | 接在谁后面 | 成功后进入 |
+|---|---|---|---|---|
+| A | 备份完成后确认 | `Approval A - backup completed confirm` | Step 05A | Step 06 |
+| B | 升级前确认 | `Approval B - pre-upgrade confirm` | Step 10A | Step 11 |
+| C | 节点二升级后确认 | `Approval C - node2 completed confirm` | Step 14A | Step 15 |
+| D | 两节点 binary 升级后确认 | `Approval D - binary completed confirm` | Step 18A | Step 19 |
+| E | datapatch 前确认 | `Approval E - before datapatch confirm` | Step 19A | Step 20 |
+| F | 清理前确认 | `Approval F - before cleanup confirm` | Step 24A | Step 25 |
+
+### 10.7 添加 Step 99 失败分支的傻瓜式操作
+
+**执行位置：AWX UI，Workflow Visualizer / 工作流可视化工具。**
+
+建议先在画布右侧或底部创建一个 `Step 99 collect failure logs` 节点：
+
+| 字段 | 值 |
+|---|---|
+| 节点类型 / Node Type | 作业模板 / Job Template |
+| 作业模板 / Job Template | `DB_RU_AWX_RUN_CHECK` |
+| 限制 / Limit | `db_nodes` 或 `primary_exec_node` |
+| 额外变量 / Extra Variables | 见下 |
+
+Step 99 Extra Variables：
+
+```yaml
+---
+step_id: "99"
+ru_run_mode: "mock"
+platform_mode: "awx_test"
+change_id: "AWX-TEST-FULL-MOCK-0001"
+allow_destructive_step: false
+approval_report_required: false
+```
+
+然后从关键节点拉 Failure 线到 Step 99：
+
+1. 点击关键节点，例如 Step 04；
+2. 添加连接 / Link；
+3. 分支类型选择 **失败 / On Failure**；
+4. 目标选择 `Step 99 collect failure logs`；
+5. 保存。
+
+Approval 节点的 Deny/拒绝 和 Timeout/超时 通常也按 Failure 处理，也连接到 Step 99。
+
+### 10.8 Workflow 节点配置表
 ### 10.2 建议 Survey
 
 | 变量 | 类型 | 默认值 | 说明 |
@@ -1742,6 +1941,7 @@ DB_RU_AWX_19_30_Rolling_Upgrade_TEST
 | 38 | Step 26 清理 Grid 中间环境 | `DB_RU_AWX_RUN_ROOT` | `db_nodes` | `step_id: "26"` |
 | 39 | Step 27 CRS 状态对比 | `DB_RU_AWX_RUN_CHECK` | `primary_exec_node` | `step_id: "27"` |
 
+### 10.9 Extra Vars 传递方式
 ### 10.4 Extra Vars 传递方式
 
 **执行位置：AWX UI，Workflow Visualizer 中每个 Workflow Node 的 Prompt/Extra Vars。**
@@ -1768,6 +1968,7 @@ allow_destructive_step: false
 approval_report_required: true
 ```
 
+### 10.10 失败分支
 ### 10.5 失败分支
 
 建议从以下关键节点增加 Failure 分支到 Step 99：
