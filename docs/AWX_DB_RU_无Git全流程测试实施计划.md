@@ -1768,6 +1768,11 @@ Resources -> Templates -> DB_RU_AWX_19_30_Rolling_Upgrade_TEST -> Visualizer
 3. 选择 Job Template：`DB_RU_AWX_RUN_ROOT`；
 4. 如果出现收敛方式 / Convergence，保持默认 **任意 / Any**；
 5. 如果出现分支类型，选择 **成功 / On Success**，表示上一步成功才进入下一步；
+6. **节点别名 / Node Alias** 填写易识别名称，例如 `Step 01 - create backup dir`；
+7. 在 **其他提示 / Prompts** 页面填写变量；
+8. 如果没有看到 **限制 / Limit** 字段，这是正常的：你的当前 AWX 版本在 Workflow Node 弹窗里只显示被 Job Template 开启了“启动时提示”的字段；如果 JT 没有给 Limit 开启 Prompt，这里就不会出现 Limit。解决方式见 10.5.1；
+9. 在 **变量 / Variables / Extra Variables** 中填写下方 YAML；
+10. 保存节点。
 6. 在 Prompt 页面填写：
    - **限制 / Limit**：`db_nodes`；
    - **额外变量 / Extra Variables**：见下方 YAML；
@@ -1785,12 +1790,88 @@ allow_destructive_step: false
 approval_report_required: true
 ```
 
+如果当前节点弹窗没有出现 **限制 / Limit** 字段，可以临时把 `limit` 也写入变量：
+
+```yaml
+---
+step_id: "01"
+target_group: "db_nodes"
+limit: "db_nodes"
+ru_run_mode: "mock"
+platform_mode: "awx_test"
+change_id: "AWX-TEST-FULL-MOCK-0001"
+allow_destructive_step: false
+approval_report_required: true
+```
+
+但更推荐回到 Job Template，把 **限制 / Limit** 设置为“启动时提示 / Prompt on Launch”，这样 Workflow Node 里才会出现 Limit 输入。
+
+#### 10.5.1 为什么没有出现 Limit 字段
+
+**执行位置：AWX UI，先退出 Workflow Visualizer，回到 Job Template 页面检查。**
+
+你截图中节点弹窗左侧只有：
+
+```text
+1 节点类型
+2 其他提示
+3 预览
+```
+
+并且“其他提示”里只有“标签 / Tags、详细程度 / Verbosity、变量 / Variables”，没有“限制 / Limit”。这通常说明对应 Job Template 没有把 Limit 设置为启动时提示。
+
+按下面检查每个通用 Job Template：
+
+```text
+资源 -> 模板 -> DB_RU_AWX_RUN_ROOT -> 编辑
+资源 -> 模板 -> DB_RU_AWX_RUN_GRID -> 编辑
+资源 -> 模板 -> DB_RU_AWX_RUN_ORACLE -> 编辑
+资源 -> 模板 -> DB_RU_AWX_RUN_CHECK -> 编辑
+```
+
+在每个 Job Template 里确认：
+
+| 中文字段 | 英文字段 | 要求 |
+|---|---|---|
+| 限制 | Limit | 字段右侧勾选 **启动时提示 / Prompt on Launch**。 |
+| 变量 | Variables / Extra Variables | 字段右侧勾选 **启动时提示 / Prompt on Launch**。 |
+| 详细程度 | Verbosity | 可选，不影响 Limit。 |
+| 标签 | Tags | 可选，不影响 Limit。 |
+
+保存 Job Template 后，回到 Workflow Visualizer，重新添加节点；如果旧节点已经创建但缺 Limit，建议删除该节点后重新添加。
+
+如果当前 AWX 版本仍然不在 Workflow Node 中显示 Limit，则使用下面的替代方案：
+
+1. 在 Job Template 层创建不同 Limit 的 JT，例如 `DB_RU_AWX_RUN_ROOT_DB_NODES`、`DB_RU_AWX_RUN_ROOT_PRIMARY`，各自固定 Limit；或者
+2. 在 Inventory/Host Pattern 中通过 Extra Vars 传 `target_group`，同时修改 `run_ru_step.yml` 使用 `hosts: "{{ target_group | default('all') }}"`。
+
+本测试阶段推荐优先使用方案 1 或修正 JT 的 Prompt on Launch，避免修改 playbook 造成额外变量解析问题。
+
+#### 10.5.2 为什么画布上两个节点都显示 DB_RU_AWX_RUN_ROOT
+
+这是 AWX 的显示方式：如果不填写 **节点别名 / Node Alias**，Workflow 画布默认显示被选中的 Job Template 名称。所以 Step 01 和 Step 02 都使用 `DB_RU_AWX_RUN_ROOT` 时，画布上就会出现两个一模一样的 `DB_RU_AWX_RUN_ROOT`。
+
+处理方式是在添加节点第 1 页填写 **节点别名 / Node Alias**：
+
+| 节点 | Job Template | 节点别名 / Node Alias 建议 |
+|---|---|---|
+| Step 01 | `DB_RU_AWX_RUN_ROOT` | `Step 01 - create backup dir` |
+| Step 02 | `DB_RU_AWX_RUN_ROOT` | `Step 02 - unzip ru script` |
+| Step 03 | `DB_RU_AWX_RUN_ROOT` | `Step 03 - clean old image` |
+| Step 05A | `DB_RU_AWX_RUN_CHECK` | `Step 05A - approval A summary` |
+| Approval A | Approval | `Approval A - backup confirm` |
+
+节点别名只影响画布显示，不影响实际执行的 Job Template。
+
 然后继续在 Step 01 节点后点击 **+**，添加 Step 02。Step 02 示例：
 
 | 字段 | 值 |
 |---|---|
 | 节点类型 / Node Type | 作业模板 / Job Template |
 | 作业模板 / Job Template | `DB_RU_AWX_RUN_ROOT` |
+| 节点别名 / Node Alias | `Step 02 - unzip ru script` |
+| 分支 / Link Type | 成功 / On Success |
+| 限制 / Limit | `primary_exec_node`，如果字段不出现，先回 Job Template 开启 Limit Prompt |
 | 分支 / Link Type | 成功 / On Success |
 | 限制 / Limit | `primary_exec_node` |
 | 额外变量 / Extra Variables | `step_id: "02"` 加公共变量 |
@@ -1887,6 +1968,16 @@ approval_report_required: false
 Approval 节点的 Deny/拒绝 和 Timeout/超时 通常也按 Failure 处理，也连接到 Step 99。
 
 ### 10.8 Workflow 节点配置表
+
+| 顺序 | 节点 | 节点别名 / Node Alias | JT/类型 | Limit | Extra Vars |
+|---:|---|---|---|---|---|
+| 1 | Step 01 创建目录 | `Step 01 - create backup dir` | `DB_RU_AWX_RUN_ROOT` | `db_nodes` | `step_id: "01"` |
+| 2 | Step 02 更新 goldimage 脚本 | `Step 02 - unzip ru script` | `DB_RU_AWX_RUN_ROOT` | `primary_exec_node` | `step_id: "02"` |
+| 3 | Step 03 清理上次 image 数据 | `Step 03 - clean old image` | `DB_RU_AWX_RUN_ROOT` | `primary_exec_node` | `step_id: "03"` |
+| 4 | Step 04 precheck | `Step 04 - precheck` | `DB_RU_AWX_RUN_ORACLE` | `primary_exec_node` | `step_id: "04"` |
+| 5 | Step 05 backup | `Step 05 - backup current home` | `DB_RU_AWX_RUN_ORACLE` | `primary_exec_node` | `step_id: "05"` |
+| 6 | Step 05A Approval A Summary | `Step 05A - approval A summary` | `DB_RU_AWX_RUN_CHECK` | `primary_exec_node` | `step_id: "05A"` |
+| 7 | Approval A | `Approval A - backup confirm` | Approval | N/A | 备份完成后确认 |
 ### 10.2 建议 Survey
 
 | 变量 | 类型 | 默认值 | 说明 |
