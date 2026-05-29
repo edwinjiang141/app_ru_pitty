@@ -506,6 +506,8 @@ cat > /root/db_ru_awx_test/project/playbooks/run_ru_step.yml <<'EOF_PLAYBOOK'
     - name: Run RU step runner
       ansible.builtin.shell: |
         set -o pipefail
+        # Workflow Node 只传 step_id；真正执行哪个 sh，由目标主机上的 ru_step_runner.sh 决定。
+        # 例如 step_id=05A -> /u01/patch1930/ru_automation/steps/step_05A.sh
         {{ ru_base_dir }}/bin/ru_step_runner.sh \
           --step-id "{{ step_id }}" \
           --run-mode "{{ ru_run_mode }}" \
@@ -1291,6 +1293,52 @@ AWX UI Job Running
 6. 对高风险 step 做二次保护；
 7. step 失败时返回非 0，让 AWX Workflow 自动中断或进入失败分支。
 
+### 9.2 Job Template、Workflow Node 和 step 脚本如何对应
+
+对应关系可以简化理解为一句话：
+
+```text
+Workflow Node 选择哪个 Job Template 决定“用谁、在哪些主机上执行”；
+Workflow Node 传入的 step_id 决定“执行 steps 目录下哪个 sh 脚本”。
+```
+
+实际链路如下：
+
+```text
+Workflow Node
+  -> 选择通用 Job Template，例如 DB_RU_AWX_RUN_ROOT
+  -> Job Template 调用同一个 playbook：run_ru_step.yml
+  -> Workflow Node 的 Extra Vars 传入 step_id，例如 step_id: "01"
+  -> run_ru_step.yml 调用目标主机上的 ru_step_runner.sh --step-id "01"
+  -> ru_step_runner.sh 按规则拼出脚本路径：steps/step_01.sh
+  -> 最终执行 /u01/patch1930/ru_automation/steps/step_01.sh
+```
+
+所以不是一个 Job Template 固定对应一个脚本，而是：
+
+| 层级 | 作用 | 示例 |
+|---|---|---|
+| Job Template | 决定使用哪个 Credential、Project、Playbook、EE，以及默认执行配置 | `DB_RU_AWX_RUN_ROOT` |
+| Workflow Node | 决定本节点的 Limit、Extra Vars、节点顺序、成功/失败连线 | `Step 01 - create backup dir` |
+| `step_id` | 决定 runner 最终调用哪个 step 脚本 | `step_id: "01"` |
+| step 脚本 | 真正承载本步骤的 shell 命令 | `steps/step_01.sh` |
+
+第一阶段从 Step 00 到 Approval A 的对应关系如下：
+
+| Workflow 节点 | 选择的 JT/节点类型 | Extra Vars 中的 `step_id` | 实际执行脚本 | 说明 |
+|---|---|---|---|---|
+| Step 00 runner smoke | `DB_RU_AWX_RUN_CHECK` | `00` | `/u01/patch1930/ru_automation/steps/step_00.sh` | 只验证 runner 链路。 |
+| Step 01 创建目录 | `DB_RU_AWX_RUN_ROOT` | `01` | `/u01/patch1930/ru_automation/steps/step_01.sh` | 创建/检查自动化目录。 |
+| Step 02 更新 goldimage 脚本 | `DB_RU_AWX_RUN_ROOT` | `02` | `/u01/patch1930/ru_automation/steps/step_02.sh` | 解压或准备脚本。 |
+| Step 03 清理上次 image 数据 | `DB_RU_AWX_RUN_ROOT` | `03` | `/u01/patch1930/ru_automation/steps/step_03.sh` | 破坏性步骤，real 模式需要额外开关。 |
+| Step 04 precheck | `DB_RU_AWX_RUN_ORACLE` | `04` | `/u01/patch1930/ru_automation/steps/step_04.sh` | 升级前检查。 |
+| Step 05 backup | `DB_RU_AWX_RUN_ORACLE` | `05` | `/u01/patch1930/ru_automation/steps/step_05.sh` | 备份当前环境。 |
+| Step 05A Approval A Summary | `DB_RU_AWX_RUN_CHECK` | `05A` | `/u01/patch1930/ru_automation/steps/step_05A.sh` | 生成 Approval A 前的摘要。 |
+| Approval A | Approval 节点 | 无 | 无 | 人工审批节点，不执行目标主机脚本。 |
+
+> 关键点：Approval 节点不对应 `/u01/patch1930/ru_automation/steps` 下的脚本；Approval 前的 Summary/Gate 节点才对应脚本，例如 `Step 05A` 对应 `step_05A.sh`。
+
+### 9.3 初始 mock runner
 ### 9.2 初始 mock runner
 
 **执行位置：k3s 节点。**
@@ -1338,6 +1386,10 @@ LOG_FILE="${RU_BASE_DIR}/logs/step_${STEP_ID}_${TS}.log"
 RESULT_FILE="${RU_BASE_DIR}/state/step_${STEP_ID}_result.json"
 DONE_FILE="${RU_BASE_DIR}/state/step_${STEP_ID}.done"
 FAILED_FILE="${RU_BASE_DIR}/state/step_${STEP_ID}.failed"
+# 核心映射规则：step_id 与 steps 目录下脚本文件一一对应。
+# 例如：--step-id 01  -> steps/step_01.sh
+#      --step-id 05A -> steps/step_05A.sh
+#      --step-id 99  -> steps/step_99.sh
 SCRIPT_FILE="${RU_BASE_DIR}/steps/step_${STEP_ID}.sh"
 
 DESTRUCTIVE_STEPS="03 11 12 15 16 20 25 26"
@@ -1368,6 +1420,7 @@ export RU_BASE_DIR STEP_ID RUN_MODE PLATFORM_MODE CHANGE_ID ALLOW_DESTRUCTIVE_ST
     exit 3
   fi
 
+  # 执行由 step_id 映射出来的脚本。
   "${SCRIPT_FILE}"
   RC=$?
   echo "step_rc=${RC}"
@@ -1415,6 +1468,9 @@ scp /root/db_ru_awx_test/ru_step_runner.sh aap_ru@<node1-ip>:/u01/patch1930/ru_a
 scp /root/db_ru_awx_test/ru_step_runner.sh aap_ru@<node2-ip>:/u01/patch1930/ru_automation/bin/ru_step_runner.sh
 ssh aap_ru@<node1-ip> 'chmod 755 /u01/patch1930/ru_automation/bin/ru_step_runner.sh && chmod 755 /u01 /u01/patch1930 /u01/patch1930/ru_automation /u01/patch1930/ru_automation/bin'
 ssh aap_ru@<node2-ip> 'chmod 755 /u01/patch1930/ru_automation/bin/ru_step_runner.sh && chmod 755 /u01 /u01/patch1930 /u01/patch1930/ru_automation /u01/patch1930/ru_automation/bin'
+```
+
+### 9.4 生成 27 个 mock step
 ssh aap_ru@<node1-ip> 'chmod +x /u01/patch1930/ru_automation/bin/ru_step_runner.sh'
 ssh aap_ru@<node2-ip> 'chmod +x /u01/patch1930/ru_automation/bin/ru_step_runner.sh'
 ```
@@ -1470,6 +1526,9 @@ scp /root/db_ru_awx_test/steps/step_*.sh aap_ru@<node1-ip>:/u01/patch1930/ru_aut
 scp /root/db_ru_awx_test/steps/step_*.sh aap_ru@<node2-ip>:/u01/patch1930/ru_automation/steps/
 ssh aap_ru@<node1-ip> 'chmod 755 /u01/patch1930/ru_automation/steps/step_*.sh && chmod 755 /u01/patch1930/ru_automation/steps'
 ssh aap_ru@<node2-ip> 'chmod 755 /u01/patch1930/ru_automation/steps/step_*.sh && chmod 755 /u01/patch1930/ru_automation/steps'
+```
+
+### 9.5 生成 6 个 Summary/Gate 脚本
 ssh aap_ru@<node1-ip> 'chmod +x /u01/patch1930/ru_automation/steps/step_*.sh'
 ssh aap_ru@<node2-ip> 'chmod +x /u01/patch1930/ru_automation/steps/step_*.sh'
 ```
@@ -1527,6 +1586,7 @@ scp /root/db_ru_awx_test/steps/step_05A.sh /root/db_ru_awx_test/steps/step_10A.s
     aap_ru@<node2-ip>:/u01/patch1930/ru_automation/steps/
 ```
 
+### 9.6 单步 runner 验证
 ### 9.5 单步 runner 验证
 
 **执行位置：AWX UI，Launch `DB_RU_AWX_RUN_CHECK` 时填写 Prompt。**
@@ -1549,6 +1609,7 @@ approval_report_required: false
 3. 目标主机生成 `logs/step_00_*.log`；
 4. 目标主机生成 `state/step_00.done` 和 `state/step_00_result.json`。
 
+### 9.7 `ru_step_runner.sh: Permission denied` 排查
 ### 9.6 `ru_step_runner.sh: Permission denied` 排查
 
 如果 AWX Job 返回类似：
