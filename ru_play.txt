@@ -1,0 +1,159 @@
+1、创建目录
+mkdir -p /u01/patch1930/rac1_backup1930
+
+
+2、更新goldimage脚本
+cd /u01/patch1930
+unzip ru.20260325.zip
+
+
+3、清理上次image数据
+rm -rf /u01/patch1928
+
+
+4、执行precheck
+cd /u01/patch1930/ru.20260325
+perl upgrade_ru_with_opatch --step_00_precheck
+
+
+5、备份现有环境
+cd /u01/patch1930/ru.20260325
+perl upgrade_ru_with_gold_image --step_00_backup --backup_dir=/u01/patch1930/rac1_backup1930
+
+
+6、保存grid home的软连接信息
+cd /u01/app/19.0.0.0/grid
+for i in `find ./ -type l`; do ll $i;done
+
+
+7、保存oracle home的软连接信息
+cd /u01/app/oracle/product/19.0.0.0/dbhome_1
+for i in `find ./ -type l`; do ll $i;done
+
+
+8、保存集群状态信息
+. /home/grid/.bash_profile
+crsctl status resource -t > /tmp/before_crs_stats.log
+
+
+9、解压goldimage
+cd /u01/patch1930/ru.20260325
+perl upgrade_ru_with_gold_image \
+    --step_00_unzip \
+    --unzip_switch_back_image \
+    --target_grid_home=/u01/app/19.0.0.0/grid2 \
+    --target_oracle_home=/u01/app/oracle/product/19.0.0.0/dbhome_2 \
+    --grid_image=/u01/patch1930/grid_home_2026-03-08_03-07-34PM.zip \
+--db_image=/u01/patch1930/db_home_2026-03-08_03-18-48PM.zip
+
+
+10、检查数据库
+sh check_crs_dbrole.sh
+sh check_dbrole.sh
+sh check_pdb.sh
+sh check_invalid_obj.sh
+
+
+11、停止节点二实例
+srvctl stop instance -node cnzhjxd001dbadm02 -f -drain_timeout 1
+
+
+12、节点二执行goldimage升级
+su – root 
+cd /u01/patch1930/ru.20260325
+/usr/bin/perl upgrade_ru_with_gold_image \
+    --step_52_switch_one_node_to_original_path_not_start_instance \
+    --target_grid_home=/u01/app/19.0.0.0/grid2 \
+--target_oracle_home=/u01/app/oracle/product/19.0.0.0/dbhome_2
+
+
+
+13、启动节点二实例
+srvctl start instance -node cnzhjxd001dbadm02
+
+
+14、检查节点二实例
+sh check_crs_dbrole.sh
+sh check_dbrole.sh
+sh check_pdb.sh
+
+
+15、停止节点一实例
+srvctl stop instance -node cnzhjxd001dbadm01 -f -drain_timeout 1
+
+
+16、节点一执行goldimage升级
+su – root 
+cd /u01/patch1930/ru.20260325
+/usr/bin/perl upgrade_ru_with_gold_image \
+    --step_52_switch_one_node_to_original_path_not_start_instance \
+    --target_grid_home=/u01/app/19.0.0.0/grid2 \
+--target_oracle_home=/u01/app/oracle/product/19.0.0.0/dbhome_2
+
+
+17、启动节点一实例
+srvctl start instance -node cnzhjxd001dbadm01
+
+
+18、检查节点一实例
+sh check_crs_dbrole.sh
+sh check_dbrole.sh
+sh check_pdb.sh
+
+
+19、修改job参数为0
+sh set_param.sh 
+
+
+20、执行datapatch
+su - root
+cd /u01/patch1930/ru.20260325
+perl upgrade_ru_with_gold_image --step_08_datapatch --create_restore_point_before_datapatch
+
+
+21、节点还原job参数为160
+sh  set_pars.sh
+
+
+22、还原oracle软连接(libobk.so64是节点二单独执行)
+cd /u01/app/oracle/product/19.0.0.0/dbhome_1
+mkdir -p ./suptools/oracle.ahf/bin/
+mkdir -p ./suptools/oracle.ahf/common/venv/bin/
+ln -s /opt/oracle.ahf/exachk/exachk ./suptools/oracle.ahf/bin/exachk                 
+ln -s /opt/oracle.ahf/python/bin/python3 ./suptools/oracle.ahf/common/venv/bin/python3    
+ln -s python3 ./suptools/oracle.ahf/common/venv/bin/python3.12  
+ln -s /usr/openv/netbackup/bin/libobk.so64 ./libobk.so64           
+
+
+
+23、还原grid软连接
+# 所有node
+cd /u01/app/19.0.0.0/grid
+ln -s /u01/app/19.0.0.0/grid/crs/utl/cmdllroot.sh ./crs/install/cmdllroot.sh 
+ln -s /opt/oracle.ahf/ ./suptools/oracle.ahf      
+ln -s /opt/oracle.ahf/tfa/bin/tfactl ./bin/tfactl
+
+
+24、数据库检查
+sh check_version.sh
+sh check_sqlpatch.sh
+
+
+
+25、清理oracle home的中间环境
+cd /u01/app/oracle/product/19.0.0.0
+rm -rf dbhome_1.backup.for.switch_back
+
+
+26、清理grid home的中间环境
+cd /u01/app/19.0.0.0
+rm -rf grid.backup.for.switch_back
+
+
+
+27、检查集群状态，与停库前进行对比
+su - grid
+crsctl stat res -t >after_upgrade.log 
+
+diff  after_upgrade.log  /tmp/before_crs_stats.log
+

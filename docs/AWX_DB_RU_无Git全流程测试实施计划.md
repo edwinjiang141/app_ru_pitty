@@ -1,4 +1,5 @@
 # AWX 无 Git 场景下 DB RU Runbook 全流程测试实施计划
+# AWX 无 Git 场景下 DB RU Runbook 全流程测试实施计划- v1
 
 > 适用状态：k3s 单节点、AWX Operator、AWX Web/Task/EE/PostgreSQL/Redis 等 Pod 已经正常 Running；当前阶段准备开始验证 `AAP_DB_RU_命令式Runbook完整开发实施方案_v3_AWX验证适配版.md` 中的 DB RU 自动化方案。
 > 关键约束：AWX 所在 k3s 环境暂时无法访问 Git；DB/RAC 目标机器位于 k3s Pod 外部；本计划以“手工导入 Project 内容 + AWX 连接外部目标主机 + mock/check/real 分阶段验证”为主线。
@@ -117,6 +118,7 @@ AWX Workflow Job Template
 **执行位置：k3s 节点。**
 
 执行：
+在 k3s 节点执行：
 
 ```bash
 kubectl get nodes -o wide
@@ -157,6 +159,7 @@ kubectl get ingress -A
 **执行位置：k3s 节点。**
 
 创建本次测试归档目录：
+建议在 k3s 节点创建一个本次测试归档目录：
 
 ```bash
 mkdir -p /root/db_ru_awx_test/evidence/{k8s,awx,project,workflow,logs,screenshots}
@@ -196,6 +199,7 @@ AWX Job 启动
 **执行位置：k3s 节点。**
 
 执行：
+在 k3s 节点执行：
 
 ```bash
 ping -c 3 <node1-ip>
@@ -281,6 +285,7 @@ kubectl -n awx run ee-debug --rm -it --restart=Never \
 
 **执行位置：k3s 节点，或者企业批准的安全管理机；以下命令以 k3s 节点为例。**
 
+`authorized_keys` 中要粘贴的“AWX 测试 SSH 公钥”不是 AWX 自动生成的，需要由实施人员在安全的管理机或 k3s 节点上生成一对专用于本次 AWX 测试的 SSH key。推荐在 k3s 节点生成并保存在测试归档目录中：
 
 ```bash
 mkdir -p /root/db_ru_awx_test/ssh
@@ -326,6 +331,10 @@ cat /root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519
 **执行位置：node1 和 node2 目标主机，使用 root 或具备创建用户权限的系统管理员账号分别执行。**
 
 在 node1/node2 上执行，其中 `<粘贴 AWX 测试 SSH 公钥>` 来自上一节生成的 `.pub` 文件：
+在 node1/node2 上执行，其中 `<粘贴 AWX 测试 SSH 公钥>` 来自上一节生成的 `.pub` 文件：
+### 5.2 目标主机创建测试账号
+
+在 node1/node2 上执行：
 
 ```bash
 useradd -m -s /bin/bash aap_ru
@@ -345,6 +354,9 @@ chown -R aap_ru:aap_ru /home/aap_ru/.ssh
 #### 5.4.1 Smoke/Mock 阶段
 
 **执行位置：node1 和 node2 目标主机，使用 root 分别执行。**
+### 5.3 sudoers 分阶段配置
+
+#### 5.3.1 Smoke/Mock 阶段
 
 只允许基础命令，不允许破坏性命令：
 
@@ -359,6 +371,7 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_mock
 #### 5.4.2 Check-only 阶段
 
 **执行位置：node1 和 node2 目标主机，使用 root 分别执行。**
+#### 5.3.2 Check-only 阶段
 
 允许切换到 grid/oracle 执行非破坏性检查命令。路径以现场实际为准：
 
@@ -374,6 +387,7 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_check
 > 注意：Check-only 阶段只放行非破坏性检查；真实阶段必须按实际命令重新做最小化授权评审。
 
 #### 5.4.3 UAT Real 阶段
+#### 5.3.3 UAT Real 阶段
 
 真实 DB RU 阶段需要按每个 step 实际命令最小化授权，不建议直接给 `ALL=(ALL) NOPASSWD: ALL`。如果测试窗口紧张，至少应做到：
 
@@ -386,6 +400,7 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_check
 ### 5.5 创建自动化目录
 
 **执行位置：node1 和 node2 目标主机，使用 root 分别执行。**
+### 5.4 创建自动化目录
 
 在 node1/node2 上创建目录：
 
@@ -416,6 +431,15 @@ chmod -R 750 /u01/patch1930/ru_automation
 - 每次变更会变化的参数放在 AWX Project 的 `conf/ru_env.conf`，例如 `CHANGE_ID`、带 RU 版本号的备份目录、RU 包路径、gold image 路径、Oracle/Grid link 路径、现场命令变量等；变更前在 AWX/k3s 侧修改这个文件，然后运行应用配置 Job，不需要改 AWX 模板定义，也不需要人工登录目标机。
 - `ru_step_runner.sh` 的顺序是：先读取 `ru_env.conf`，再应用 `run_ru_step.yml` 从 AWX 传来的非空参数；因此 AWX 中固定的 `step_id`/`step_name` 会覆盖配置文件，避免跑错脚本。
 - `ru_env.conf` 只能放非敏感配置；SSH 密码、sudo 密码、私钥等仍然必须放在 AWX Credential 中。
+- `ru_env.example.conf` 是样例模板，不会被 AWX 自动读取，也不会被 `step_*.sh` 自动读取；生产使用时要复制成目标机上的 `/u01/patch1930/ru_automation/conf/ru_env.conf`。
+- 固定节点参数继续放在 AWX Workflow Node Extra Vars，例如 `step_id`、`step_name`、`ru_run_mode`、`allow_destructive_step`、`approval_report_required`；这些参数定义节点身份和安全开关，不应该每次变更都改 Job Template。
+- 每次变更会变化的参数放在目标机 `ru_env.conf`，例如 `CHANGE_ID`、带 RU 版本号的备份目录、RU 包路径、gold image 路径、Oracle/Grid link 路径、现场命令变量等；变更前修改这个文件即可，不需要改 AWX 模板定义。
+- `ru_step_runner.sh` 的顺序是：先读取 `ru_env.conf`，再应用 `run_ru_step.yml` 从 AWX 传来的非空参数；因此 AWX 中固定的 `step_id`/`step_name` 会覆盖配置文件，避免跑错脚本。
+- `ru_env.conf` 只能放非敏感配置；SSH 密码、sudo 密码、私钥等仍然必须放在 AWX Credential 中。
+- `ru_env.example.conf` 只是样例模板，不会被 AWX 自动读取，也不会被 `step_*.sh` 自动读取。
+- 推荐 AWX 测试阶段优先使用 Workflow / Job Template 的 Extra Vars 传运行参数，这样每次作业的输入在 AWX 作业详情里可审计。
+- 如果某些目标机固定参数很多，可以在目标机上把模板复制为 `/u01/patch1930/ru_automation/conf/ru_env.conf`，改成现场值，然后让 `ru_step_runner.sh` 在执行 step 前 `source /u01/patch1930/ru_automation/conf/ru_env.conf`。
+- `ru_env.conf` 只能放路径、实例名、脚本名、现场命令等非敏感配置；SSH 密码、sudo 密码、私钥等仍然必须放在 AWX Credential 中。
 
 ---
 
@@ -456,13 +480,12 @@ kubectl -n awx exec -it <awx-task-pod> -- bash -lc 'pwd; ls -ld /var/lib/awx/pro
 
 ```bash
 kubectl -n awx exec -it <awx-task-pod> -- bash -lc 'mkdir -p /var/lib/awx/projects/db-ru-automation/{playbooks,conf}'
+kubectl -n awx exec -it <awx-task-pod> -- bash -lc 'mkdir -p /var/lib/awx/projects/db-ru-automation/playbooks'
 ```
 
 **执行位置：k3s 节点。**
 
-从 k3s 节点准备 AWX Manual Project 内容。**这里不再在文档中内嵌大段 YAML**，避免把 `apply_ru_env_conf.yml` 的内容误看成 `ru_env.conf` 的内容。
-
-> 下面命令假设当前目录是本仓库根目录，例如 `/workspace/app_ru_pitty`，或者你已经把本仓库内容手工上传到了 k3s 节点。
+从 k3s 节点准备 AWX Manual Project 内容。这里分成 5 个小步骤，避免 heredoc 嵌套后看起来像 YAML 串到别的文件里。
 
 #### 6.2.1 创建本地项目骨架
 
@@ -470,28 +493,320 @@ kubectl -n awx exec -it <awx-task-pod> -- bash -lc 'mkdir -p /var/lib/awx/projec
 mkdir -p /root/db_ru_awx_test/project/{playbooks,conf}
 ```
 
-#### 6.2.2 复制两个 AWX Project playbook
+#### 6.2.2 写入 AWX 调用目标机 runner 的 playbook
 
-这两个文件都属于 **AWX Project 的 playbook**：
+这个文件属于 **AWX Project**，路径是：
 
-| 本仓库文件 | 复制到 k3s 节点后的文件 | 用途 |
-|---|---|---|
-| `playbooks/run_ru_step.yml` | `/root/db_ru_awx_test/project/playbooks/run_ru_step.yml` | AWX 每个 RU step 节点调用目标机 runner。 |
-| `playbooks/apply_ru_env_conf.yml` | `/root/db_ru_awx_test/project/playbooks/apply_ru_env_conf.yml` | Workflow 最开始下发本次 `ru_env.conf` 到目标机。 |
-
-```bash
-cp playbooks/run_ru_step.yml /root/db_ru_awx_test/project/playbooks/run_ru_step.yml
-cp playbooks/apply_ru_env_conf.yml /root/db_ru_awx_test/project/playbooks/apply_ru_env_conf.yml
+```text
+/root/db_ru_awx_test/project/playbooks/run_ru_step.yml
 ```
 
-> 说明：`apply_ru_env_conf.yml` 是一个 Ansible Playbook。它里面出现的 YAML 内容只属于这个 playbook，不属于 `ru_env.conf`。
-
-#### 6.2.3 准备本次变更的 ru_env.conf
-
-`ru_env.conf` 是 **AWX Project 的配置文件**，不是 playbook，也不是 Workflow Node Extra Vars。先从模板复制：
+内容如下：
 
 ```bash
-cp automation/conf/ru_env.example.conf /root/db_ru_awx_test/project/conf/ru_env.conf
+cat > /root/db_ru_awx_test/project/playbooks/run_ru_step.yml <<'EOF_PLAYBOOK'
+---
+- name: Run one DB RU workflow step on target hosts
+从 k3s 节点复制本地项目文件进去：
+
+```bash
+mkdir -p /root/db_ru_awx_test/project/{playbooks,conf}
+cat > /root/db_ru_awx_test/project/playbooks/run_ru_step.yml <<'EOF_PLAYBOOK'
+---
+- name: Run one DB RU workflow step on target hosts
+mkdir -p /root/db_ru_awx_test/project/playbooks
+cat > /root/db_ru_awx_test/project/playbooks/run_ru_step.yml <<'EOF_PLAYBOOK'
+---
+- name: Run one DB RU workflow step on target hosts
+- name: Run DB RU step through generic runner
+  hosts: all
+  gather_facts: false
+  become: false
+
+  vars:
+    # The runner lives on the target DB/RAC hosts, not inside the AWX Pod.
+    ru_base_dir: "{{ ru_base_dir | default('/u01/patch1930/ru_automation') }}"
+    ru_runner_path: "{{ ru_runner_path | default(ru_base_dir ~ '/bin/ru_step_runner.sh') }}"
+    ru_env_file: "{{ ru_env_file | default(ru_base_dir ~ '/conf/ru_env.conf') }}"
+
+  tasks:
+    - name: Explain AWX-to-runner variable handoff
+      ansible.builtin.debug:
+        msg:
+          - "AWX node Extra Vars provide fixed node values: step_id={{ step_id | default('UNSET') }}, step_name={{ step_name | default('') }}."
+          - "Per-change values such as CHANGE_ID and backup paths may come from target-host ru_env.conf: {{ ru_env_file }}."
+          - "Non-empty AWX arguments override ru_env.conf values in ru_step_runner.sh."
+
+    - name: Run selected DB RU step through target-host runner
+      ansible.builtin.shell: |
+        set -o pipefail
+        {{ ru_runner_path | quote }} \
+          --ru-base-dir {{ ru_base_dir | quote }} \
+          --env-file {{ ru_env_file | quote }} \
+          --step-id {{ step_id | mandatory | quote }} \
+          --step-name {{ step_name | default('') | quote }} \
+          --run-mode {{ ru_run_mode | default('mock') | quote }} \
+          --platform-mode {{ platform_mode | default('awx_test') | quote }} \
+          --allow-destructive-step {{ allow_destructive_step | default(false) | string | quote }} \
+          --approval-report-required {{ approval_report_required | default(true) | string | quote }} \
+          --change-id {{ change_id | default('') | quote }}
+      args:
+        executable: /bin/bash
+      register: ru_step_runner_result
+      changed_when: true
+      failed_when: ru_step_runner_result.rc != 0
+EOF_PLAYBOOK
+```
+
+#### 6.2.3 写入 AWX 下发 ru_env.conf 的 playbook
+
+这个文件也属于 **AWX Project**，路径是：
+
+```text
+/root/db_ru_awx_test/project/playbooks/apply_ru_env_conf.yml
+```
+
+内容如下。注意：下面这段 YAML 是 `apply_ru_env_conf.yml` 的内容，不属于 `ru_env.conf`。
+
+```bash
+
+kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
+  <awx-task-pod>:/var/lib/awx/projects/db-ru-automation/playbooks/run_ru_step.yml
+
+cat > /root/db_ru_awx_test/project/playbooks/apply_ru_env_conf.yml <<'EOF_APPLY_ENV'
+---
+- name: Apply DB RU env configuration to target hosts
+  hosts: all
+  gather_facts: false
+  become: false
+
+  vars:
+    # This playbook is run from AWX before the RU workflow starts.
+    # It writes the per-change config to the external DB/RAC target host.
+    ru_base_dir: "{{ ru_base_dir | default('/u01/patch1930/ru_automation') }}"
+    ru_env_file: "{{ ru_env_file | default(ru_base_dir ~ '/conf/ru_env.conf') }}"
+    # Default source is a file in the manually imported AWX Project.
+    # Operators should edit this file on the AWX/k3s side before launching this job.
+    ru_env_conf_src: "{{ ru_env_conf_src | default(playbook_dir ~ '/../conf/ru_env.conf') }}"
+    # Optional alternative: paste the whole config through an AWX Survey/Textarea.
+    ru_env_conf_content: "{{ ru_env_conf_content | default('') }}"
+
+  tasks:
+    - name: Load ru_env.conf content from AWX project file or Survey content
+      ansible.builtin.set_fact:
+        ru_env_conf_rendered: >-
+          {{ ru_env_conf_content
+             if (ru_env_conf_content | string | length > 0)
+             else lookup('ansible.builtin.file', ru_env_conf_src, errors='ignore') }}
+
+    - name: Validate ru_env.conf content is present and non-secret
+      ansible.builtin.assert:
+        that:
+          - ru_env_conf_rendered | string | length > 0
+          - ru_env_conf_rendered | regex_search('(?i)BEGIN[ -]+.*PRIVATE[ -]+KEY') is none
+          - ru_env_conf_rendered | regex_search('(?i)(password|passwd|secret|token)\s*=\s*[^\s#]+') is none
+        fail_msg: >-
+          ru_env.conf content is empty or appears to contain secrets. Create the
+          AWX Project file conf/ru_env.conf, or pass ru_env_conf_content through
+          a Survey, and keep passwords/private keys in AWX Credentials only.
+
+    - name: Ensure DB RU target directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0750"
+      loop:
+        - "{{ ru_base_dir }}"
+        - "{{ ru_base_dir }}/conf"
+        - "{{ ru_base_dir }}/logs"
+        - "{{ ru_base_dir }}/state"
+        - "{{ ru_base_dir }}/reports"
+        - "{{ ru_base_dir }}/tmp"
+
+    - name: Install per-change ru_env.conf on target host
+      ansible.builtin.copy:
+        content: "{{ ru_env_conf_rendered }}\n"
+        dest: "{{ ru_env_file }}"
+        mode: "0640"
+        backup: true
+        validate: "/bin/bash -n %s"
+
+    - name: Verify target ru_env.conf can be sourced by bash
+      ansible.builtin.shell: |
+        set -o pipefail
+        set -a
+        # shellcheck source=/dev/null
+        source {{ ru_env_file | quote }}
+        set +a
+        echo "ru_env_file={{ ru_env_file }}"
+        echo "CHANGE_ID=${CHANGE_ID:-UNSET}"
+        echo "RU_BASE_DIR=${RU_BASE_DIR:-UNSET}"
+        echo "RU_SCRIPT_DIR=${RU_SCRIPT_DIR:-UNSET}"
+      args:
+        executable: /bin/bash
+      register: ru_env_verify
+      changed_when: false
+
+    - name: Show ru_env.conf verification summary
+      ansible.builtin.debug:
+        var: ru_env_verify.stdout_lines
+EOF_APPLY_ENV
+```
+
+#### 6.2.4 写入本次变更的 ru_env.conf
+
+这个文件属于 **AWX Project 的配置文件**，路径是：
+
+```text
+/root/db_ru_awx_test/project/conf/ru_env.conf
+```
+
+它不是 playbook，也不是 Workflow Node Extra Vars；它会在 Workflow 最开始通过 `DB_RU_AWX_APPLY_ENV_CONF` 下发到每台目标主机的：
+
+```text
+/u01/patch1930/ru_automation/conf/ru_env.conf
+```
+
+内容如下：
+
+```bash
+
+cat > /root/db_ru_awx_test/project/conf/ru_env.conf <<'EOF_RU_ENV'
+# Example environment file for DB RU scripts.
+#
+# Copy this TEMPLATE to the AWX Manual Project as conf/ru_env.conf, edit it on
+# the AWX/k3s side before each RU change, then run the AWX Job Template
+# DB_RU_AWX_APPLY_ENV_CONF to distribute it to every target DB/RAC host at:
+# /u01/patch1930/ru_automation/conf/ru_env.conf
+#
+# Keep fixed workflow-node values in AWX Workflow Node Extra Vars:
+# step_id, step_name, ru_run_mode, allow_destructive_step, and
+# approval_report_required.
+#
+# Keep per-change non-secret values here: CHANGE_ID, versioned backup paths,
+# package paths, Oracle/Grid link paths, DB names, instance names, and reviewed
+# site commands.
+#
+# Do not put passwords, private keys, sudo passwords, tokens, or other secrets
+# in this file. Use AWX Credentials for SSH/sudo authentication.
+
+# Used by: runner, ru_common, every step.
+# Meaning: target-host base directory that contains bin/, conf/, steps/, logs/,
+# state/, reports/, tmp/, and packages/.
+RU_BASE_DIR=/u01/patch1930/ru_automation
+
+# Used by: runner and ru_common reports/logs.
+# Meaning: change/ticket identifier for this RU execution. Update before each RU.
+CHANGE_ID=
+
+# Used by: steps 11, 13, 15, 17 and status-check commands.
+# Meaning: srvctl database unique name, for example ORCL19C.
+DB_UNIQUE_NAME=
+
+# Used by: steps 15 and 17.
+# Meaning: node1 instance name used by srvctl stop/start instance.
+NODE1_INSTANCE=
+
+# Used by: steps 11 and 13.
+# Meaning: node2 instance name used by srvctl stop/start instance.
+NODE2_INSTANCE=
+
+# Used by: steps 06 and 23.
+# Meaning: Grid Home symlink path to capture and restore.
+GRID_HOME_LINK=
+
+# Used by: steps 07 and 22.
+# Meaning: Oracle Home symlink path to capture and restore.
+ORACLE_HOME_LINK=
+
+# Used by: steps 12 and 16 check mode and reviewed switch commands.
+# Meaning: new Oracle Home/gold-image target path expected after RU switch.
+NEW_ORACLE_HOME=
+
+# Used by: step 09.
+# Meaning: zip/archive path for the RU gold image on the target host.
+GOLD_IMAGE_ARCHIVE=
+
+# Used by: step 09.
+# Meaning: destination directory where the gold image archive is unpacked.
+GOLD_IMAGE_DIR=
+
+# Used by: step 02.
+# Meaning: zip/archive path containing ru_script helper files.
+RU_SCRIPT_ARCHIVE=
+
+# Used by: ru_common, steps 02, 12, 16.
+# Meaning: target directory containing Comments.pm, ru_patch_number.ini,
+# upgrade_ru_with_gold_image, and upgrade_ru_with_opatch.
+RU_SCRIPT_DIR=/u01/patch1930/ru_automation/packages/ru_script
+
+# Used by: steps 12 and 16 when SWITCH_NODE*_HOME_CMD is not set.
+# Meaning: Perl helper script name under RU_SCRIPT_DIR for gold-image switching.
+RU_GOLD_IMAGE_SCRIPT=upgrade_ru_with_gold_image
+
+# Used by: step 02 validation and optional site commands.
+# Meaning: Perl helper script name under RU_SCRIPT_DIR for opatch-style RU.
+RU_OPATCH_SCRIPT=upgrade_ru_with_opatch
+
+# Used by: step 02 validation and ru_script helper scripts.
+# Meaning: patch-number config file expected under RU_SCRIPT_DIR.
+RU_PATCH_NUMBER_INI=ru_patch_number.ini
+
+# Used by: step 02 validation and ru_script Perl helpers.
+# Meaning: Perl module expected under RU_SCRIPT_DIR.
+RU_COMMENTS_PM=Comments.pm
+
+# Used by: step 03.
+# Meaning: old temporary image/patch directory to remove in real mode.
+OLD_IMAGE_DIR=
+
+# Used by: step 05.
+# Meaning: source Oracle/Grid home or directory to back up.
+BACKUP_SOURCE=
+
+# Used by: step 05.
+# Meaning: per-change backup destination, usually includes RU version/change id.
+BACKUP_DEST=
+
+# Used by: step 25.
+# Meaning: Oracle backup home/path to remove during cleanup.
+ORACLE_BACKUP_HOME=
+
+# Used by: step 26.
+# Meaning: Grid backup home/path to remove during cleanup.
+GRID_BACKUP_HOME=
+
+# Site-specific real commands. Keep these reviewed and change-controlled.
+# Used by: step 04 real mode. Should run DB/RAC/RU prechecks.
+PRECHECK_CMD=
+
+# Used by: step 10 real mode. Should run pre-database checks.
+PRE_DB_CHECK_CMD=
+
+# Used by: step 18 real mode. Should verify node1 after restart/switch.
+CHECK_NODE1_CMD=
+
+# Used by: step 14 real mode. Should verify node2 after restart/switch.
+CHECK_NODE2_CMD=
+
+# Used by: step 19 real mode. Should set required job parameter to 0.
+SET_JOB_ZERO_CMD=
+
+# Used by: step 20 real mode. Optional; if empty, step 20 falls back to datapatch -verbose.
+DATAPATCH_CMD=
+
+# Used by: step 21 real mode. Should restore changed job parameter.
+RESTORE_JOB_PARAM_CMD=
+
+# Used by: step 24 real mode. Should run post-upgrade DB checks.
+POST_DB_CHECK_CMD=
+
+# Used by: step 16 real mode. If empty, step 16 calls RU_GOLD_IMAGE_SCRIPT node1.
+SWITCH_NODE1_HOME_CMD=
+
+# Used by: step 12 real mode. If empty, step 12 calls RU_GOLD_IMAGE_SCRIPT node2.
+SWITCH_NODE2_HOME_CMD=
+EOF_RU_ENV
 ```
 
 每次变更前，在 k3s/AWX 侧编辑这个文件，填入本次 `CHANGE_ID`、RU 版本路径、备份路径等：
@@ -500,32 +815,73 @@ cp automation/conf/ru_env.example.conf /root/db_ru_awx_test/project/conf/ru_env.
 vi /root/db_ru_awx_test/project/conf/ru_env.conf
 ```
 
-随后 `DB_RU_AWX_APPLY_ENV_CONF` Job 会把这个文件下发到每台目标主机的：
-
-```text
-/u01/patch1930/ru_automation/conf/ru_env.conf
-```
-
-#### 6.2.4 复制 Project 文件到 AWX Task Pod
+#### 6.2.5 复制 Project 文件到 AWX Task Pod
 
 ```bash
 kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
   <awx-task-pod>:/var/lib/awx/projects/db-ru-automation/playbooks/run_ru_step.yml
+
+# 每次变更前，在 k3s/AWX 侧编辑这个文件，填入本次 CHANGE_ID、RU 版本路径、备份路径等。
+vi /root/db_ru_awx_test/project/conf/ru_env.conf
+
 kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/apply_ru_env_conf.yml \
   <awx-task-pod>:/var/lib/awx/projects/db-ru-automation/playbooks/apply_ru_env_conf.yml
 kubectl -n awx cp /root/db_ru_awx_test/project/conf/ru_env.conf \
   <awx-task-pod>:/var/lib/awx/projects/db-ru-automation/conf/ru_env.conf
-```
+    ru_base_dir: "/u01/patch1930/ru_automation"
+    ru_run_mode: "{{ ru_run_mode | default('mock') }}"
+    platform_mode: "{{ platform_mode | default('awx_test') }}"
+    allow_destructive_step: "{{ allow_destructive_step | default(false) }}"
+    change_id: "{{ change_id | default('AWX-TEST-CHG0001') }}"
+    step_name: "{{ step_name | default('step_' ~ step_id | default('unknown')) }}"
+    approval_report_required: "{{ approval_report_required | default(true) }}"
 
-#### 6.2.5 最终目录应该长这样
+  tasks:
+    - name: Validate required variable step_id
+      ansible.builtin.assert:
+        that:
+          - step_id is defined
+          - step_id | string | length > 0
+        fail_msg: "step_id is required, for example step_id=04"
 
-```text
-/var/lib/awx/projects/db-ru-automation/
-├── conf/
-│   └── ru_env.conf
-└── playbooks/
-    ├── apply_ru_env_conf.yml
-    └── run_ru_step.yml
+    - name: Show runtime parameters
+      ansible.builtin.debug:
+        msg:
+          - "platform_mode={{ platform_mode }}"
+          - "ru_run_mode={{ ru_run_mode }}"
+          - "step_id={{ step_id }}"
+          - "step_name={{ step_name }}"
+          - "change_id={{ change_id }}"
+          - "allow_destructive_step={{ allow_destructive_step }}"
+          - "approval_report_required={{ approval_report_required }}"
+          - "inventory_hostname={{ inventory_hostname }}"
+
+    - name: Run RU step runner
+      ansible.builtin.shell: |
+        set -o pipefail
+        # Workflow Node 只传 step_id；真正执行哪个 sh，由目标主机上的 ru_step_runner.sh 决定。
+        # 例如 step_id=05A -> /u01/patch1930/ru_automation/steps/step_05A.sh
+        {{ ru_base_dir }}/bin/ru_step_runner.sh \
+          --step-id "{{ step_id }}" \
+          --step-name "{{ step_name }}" \
+          --run-mode "{{ ru_run_mode }}" \
+          --platform-mode "{{ platform_mode }}" \
+          --change-id "{{ change_id }}" \
+          --allow-destructive-step "{{ allow_destructive_step }}" \
+          --approval-report-required "{{ approval_report_required }}"
+      args:
+        executable: /bin/bash
+      register: ru_step_result
+      changed_when: true
+      failed_when: ru_step_result.rc != 0
+
+    - name: Print RU step output
+      ansible.builtin.debug:
+        var: ru_step_result.stdout_lines
+EOF_PLAYBOOK
+
+kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
+  <awx-task-pod>:/var/lib/awx/projects/db-ru-automation/playbooks/run_ru_step.yml
 ```
 
 **执行位置：AWX UI，Resources -> Projects -> Add。**
