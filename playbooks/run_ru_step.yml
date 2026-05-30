@@ -1,0 +1,38 @@
+---
+- name: Run one DB RU workflow step on target hosts
+  hosts: all
+  gather_facts: false
+  become: false
+
+  vars:
+    # The runner lives on the target DB/RAC hosts, not inside the AWX Pod.
+    ru_base_dir: "{{ ru_base_dir | default('/u01/patch1930/ru_automation') }}"
+    ru_runner_path: "{{ ru_runner_path | default(ru_base_dir ~ '/bin/ru_step_runner.sh') }}"
+    ru_env_file: "{{ ru_env_file | default(ru_base_dir ~ '/conf/ru_env.conf') }}"
+
+  tasks:
+    - name: Explain AWX-to-runner variable handoff
+      ansible.builtin.debug:
+        msg:
+          - "AWX node Extra Vars provide fixed node values: step_id={{ step_id | default('UNSET') }}, step_name={{ step_name | default('') }}."
+          - "Per-change values such as CHANGE_ID and backup paths may come from target-host ru_env.conf: {{ ru_env_file }}."
+          - "Non-empty AWX arguments override ru_env.conf values in ru_step_runner.sh."
+
+    - name: Run selected DB RU step through target-host runner
+      ansible.builtin.shell: |
+        set -o pipefail
+        {{ ru_runner_path | quote }} \
+          --ru-base-dir {{ ru_base_dir | quote }} \
+          --env-file {{ ru_env_file | quote }} \
+          --step-id {{ step_id | mandatory | quote }} \
+          --step-name {{ step_name | default('') | quote }} \
+          --run-mode {{ ru_run_mode | default('mock') | quote }} \
+          --platform-mode {{ platform_mode | default('awx_test') | quote }} \
+          --allow-destructive-step {{ allow_destructive_step | default(false) | string | quote }} \
+          --approval-report-required {{ approval_report_required | default(true) | string | quote }} \
+          --change-id {{ change_id | default('') | quote }}
+      args:
+        executable: /bin/bash
+      register: ru_step_runner_result
+      changed_when: true
+      failed_when: ru_step_runner_result.rc != 0
