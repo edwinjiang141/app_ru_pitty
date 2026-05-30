@@ -484,6 +484,28 @@ kubectl -n awx exec -it <awx-task-pod> -- bash -lc 'mkdir -p /var/lib/awx/projec
 
 **执行位置：k3s 节点。**
 
+从 k3s 节点准备 AWX Manual Project 内容。这里分成 5 个小步骤，避免 heredoc 嵌套后看起来像 YAML 串到别的文件里。
+
+#### 6.2.1 创建本地项目骨架
+
+```bash
+mkdir -p /root/db_ru_awx_test/project/{playbooks,conf}
+```
+
+#### 6.2.2 写入 AWX 调用目标机 runner 的 playbook
+
+这个文件属于 **AWX Project**，路径是：
+
+```text
+/root/db_ru_awx_test/project/playbooks/run_ru_step.yml
+```
+
+内容如下：
+
+```bash
+cat > /root/db_ru_awx_test/project/playbooks/run_ru_step.yml <<'EOF_PLAYBOOK'
+---
+- name: Run one DB RU workflow step on target hosts
 从 k3s 节点复制本地项目文件进去：
 
 ```bash
@@ -533,6 +555,19 @@ cat > /root/db_ru_awx_test/project/playbooks/run_ru_step.yml <<'EOF_PLAYBOOK'
       changed_when: true
       failed_when: ru_step_runner_result.rc != 0
 EOF_PLAYBOOK
+```
+
+#### 6.2.3 写入 AWX 下发 ru_env.conf 的 playbook
+
+这个文件也属于 **AWX Project**，路径是：
+
+```text
+/root/db_ru_awx_test/project/playbooks/apply_ru_env_conf.yml
+```
+
+内容如下。注意：下面这段 YAML 是 `apply_ru_env_conf.yml` 的内容，不属于 `ru_env.conf`。
+
+```bash
 
 kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
   <awx-task-pod>:/var/lib/awx/projects/db-ru-automation/playbooks/run_ru_step.yml
@@ -615,6 +650,25 @@ cat > /root/db_ru_awx_test/project/playbooks/apply_ru_env_conf.yml <<'EOF_APPLY_
       ansible.builtin.debug:
         var: ru_env_verify.stdout_lines
 EOF_APPLY_ENV
+```
+
+#### 6.2.4 写入本次变更的 ru_env.conf
+
+这个文件属于 **AWX Project 的配置文件**，路径是：
+
+```text
+/root/db_ru_awx_test/project/conf/ru_env.conf
+```
+
+它不是 playbook，也不是 Workflow Node Extra Vars；它会在 Workflow 最开始通过 `DB_RU_AWX_APPLY_ENV_CONF` 下发到每台目标主机的：
+
+```text
+/u01/patch1930/ru_automation/conf/ru_env.conf
+```
+
+内容如下：
+
+```bash
 
 cat > /root/db_ru_awx_test/project/conf/ru_env.conf <<'EOF_RU_ENV'
 # Example environment file for DB RU scripts.
@@ -752,6 +806,19 @@ SWITCH_NODE1_HOME_CMD=
 # Used by: step 12 real mode. If empty, step 12 calls RU_GOLD_IMAGE_SCRIPT node2.
 SWITCH_NODE2_HOME_CMD=
 EOF_RU_ENV
+```
+
+每次变更前，在 k3s/AWX 侧编辑这个文件，填入本次 `CHANGE_ID`、RU 版本路径、备份路径等：
+
+```bash
+vi /root/db_ru_awx_test/project/conf/ru_env.conf
+```
+
+#### 6.2.5 复制 Project 文件到 AWX Task Pod
+
+```bash
+kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
+  <awx-task-pod>:/var/lib/awx/projects/db-ru-automation/playbooks/run_ru_step.yml
 
 # 每次变更前，在 k3s/AWX 侧编辑这个文件，填入本次 CHANGE_ID、RU 版本路径、备份路径等。
 vi /root/db_ru_awx_test/project/conf/ru_env.conf
@@ -836,6 +903,7 @@ kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
 kubectl -n awx exec -it <awx-task-pod> -- bash -lc 'find /var/lib/awx/projects -maxdepth 3 -type f -print -exec sed -n "1,20p" {} \;'
 ```
 
+### 6.2.6 Playbook 目录下拉框为空时的原因和处理
 ### 6.2.1 Playbook 目录下拉框为空时的原因和处理
 
 如果执行上面的 `find` 已经能在 **AWX Task Pod** 中看到：
