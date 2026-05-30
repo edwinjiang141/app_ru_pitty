@@ -1,0 +1,76 @@
+---
+- name: Apply DB RU env configuration to target hosts
+  hosts: all
+  gather_facts: false
+  become: false
+
+  vars:
+    # This playbook is run from AWX before the RU workflow starts.
+    # It writes the per-change config to the external DB/RAC target host.
+    ru_base_dir: "{{ ru_base_dir | default('/u01/patch1930/ru_automation') }}"
+    ru_env_file: "{{ ru_env_file | default(ru_base_dir ~ '/conf/ru_env.conf') }}"
+    # Default source is a file in the manually imported AWX Project.
+    # Operators should edit this file on the AWX/k3s side before launching this job.
+    ru_env_conf_src: "{{ ru_env_conf_src | default(playbook_dir ~ '/../conf/ru_env.conf') }}"
+    # Optional alternative: paste the whole config through an AWX Survey/Textarea.
+    ru_env_conf_content: "{{ ru_env_conf_content | default('') }}"
+
+  tasks:
+    - name: Load ru_env.conf content from AWX project file or Survey content
+      ansible.builtin.set_fact:
+        ru_env_conf_rendered: >-
+          {{ ru_env_conf_content
+             if (ru_env_conf_content | string | length > 0)
+             else lookup('ansible.builtin.file', ru_env_conf_src, errors='ignore') }}
+
+    - name: Validate ru_env.conf content is present and non-secret
+      ansible.builtin.assert:
+        that:
+          - ru_env_conf_rendered | string | length > 0
+          - ru_env_conf_rendered | regex_search('(?i)BEGIN[ -]+.*PRIVATE[ -]+KEY') is none
+          - ru_env_conf_rendered | regex_search('(?i)(password|passwd|secret|token)\s*=\s*[^\s#]+') is none
+        fail_msg: >-
+          ru_env.conf content is empty or appears to contain secrets. Create the
+          AWX Project file conf/ru_env.conf, or pass ru_env_conf_content through
+          a Survey, and keep passwords/private keys in AWX Credentials only.
+
+    - name: Ensure DB RU target directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0750"
+      loop:
+        - "{{ ru_base_dir }}"
+        - "{{ ru_base_dir }}/conf"
+        - "{{ ru_base_dir }}/logs"
+        - "{{ ru_base_dir }}/state"
+        - "{{ ru_base_dir }}/reports"
+        - "{{ ru_base_dir }}/tmp"
+
+    - name: Install per-change ru_env.conf on target host
+      ansible.builtin.copy:
+        content: "{{ ru_env_conf_rendered }}\n"
+        dest: "{{ ru_env_file }}"
+        mode: "0640"
+        backup: true
+        validate: "/bin/bash -n %s"
+
+    - name: Verify target ru_env.conf can be sourced by bash
+      ansible.builtin.shell: |
+        set -o pipefail
+        set -a
+        # shellcheck source=/dev/null
+        source {{ ru_env_file | quote }}
+        set +a
+        echo "ru_env_file={{ ru_env_file }}"
+        echo "CHANGE_ID=${CHANGE_ID:-UNSET}"
+        echo "RU_BASE_DIR=${RU_BASE_DIR:-UNSET}"
+        echo "RU_SCRIPT_DIR=${RU_SCRIPT_DIR:-UNSET}"
+      args:
+        executable: /bin/bash
+      register: ru_env_verify
+      changed_when: false
+
+    - name: Show ru_env.conf verification summary
+      ansible.builtin.debug:
+        var: ru_env_verify.stdout_lines

@@ -10,6 +10,7 @@
 #
 # The defaults below are only safe fallbacks for local/mock execution. In AWX runs
 # they should already be set by ru_step_runner.sh before this file is sourced.
+# Keep this default list aligned with automation/conf/ru_env.example.conf.
 # This file is sourced by steps/step_*.sh and expects the generic runner to export:
 # RU_BASE_DIR, STEP_ID, STEP_NAME, RUN_MODE, CHANGE_ID, ALLOW_DESTRUCTIVE_STEP, LOG_FILE.
 
@@ -19,6 +20,43 @@ set -Eeuo pipefail
 : "${STEP_ID:=unknown}"
 : "${STEP_NAME:=step_${STEP_ID}}"
 : "${RUN_MODE:=mock}"
+: "${PLATFORM_MODE:=awx_test}"
+: "${CHANGE_ID:=UNKNOWN_CHANGE}"
+: "${ALLOW_DESTRUCTIVE_STEP:=false}"
+: "${APPROVAL_REPORT_REQUIRED:=true}"
+: "${LOG_FILE:=${RU_BASE_DIR}/logs/step_${STEP_ID}.log}"
+: "${RESULT_FILE:=${RU_BASE_DIR}/state/step_${STEP_ID}_result.json}"
+
+# Per-change/site values normally loaded from target-host conf/ru_env.conf.
+: "${DB_UNIQUE_NAME:=}"
+: "${NODE1_INSTANCE:=}"
+: "${NODE2_INSTANCE:=}"
+: "${GRID_HOME_LINK:=}"
+: "${ORACLE_HOME_LINK:=}"
+: "${NEW_ORACLE_HOME:=}"
+: "${GOLD_IMAGE_ARCHIVE:=}"
+: "${GOLD_IMAGE_DIR:=}"
+: "${RU_SCRIPT_ARCHIVE:=}"
+: "${RU_SCRIPT_DIR:=${RU_BASE_DIR}/packages/ru_script}"
+: "${RU_GOLD_IMAGE_SCRIPT:=upgrade_ru_with_gold_image}"
+: "${RU_OPATCH_SCRIPT:=upgrade_ru_with_opatch}"
+: "${RU_PATCH_NUMBER_INI:=ru_patch_number.ini}"
+: "${RU_COMMENTS_PM:=Comments.pm}"
+: "${OLD_IMAGE_DIR:=}"
+: "${BACKUP_SOURCE:=}"
+: "${BACKUP_DEST:=}"
+: "${ORACLE_BACKUP_HOME:=}"
+: "${GRID_BACKUP_HOME:=}"
+: "${PRECHECK_CMD:=}"
+: "${PRE_DB_CHECK_CMD:=}"
+: "${CHECK_NODE1_CMD:=}"
+: "${CHECK_NODE2_CMD:=}"
+: "${SET_JOB_ZERO_CMD:=}"
+: "${DATAPATCH_CMD:=}"
+: "${RESTORE_JOB_PARAM_CMD:=}"
+: "${POST_DB_CHECK_CMD:=}"
+: "${SWITCH_NODE1_HOME_CMD:=}"
+: "${SWITCH_NODE2_HOME_CMD:=}"
 : "${CHANGE_ID:=UNKNOWN_CHANGE}"
 : "${ALLOW_DESTRUCTIVE_STEP:=false}"
 : "${LOG_FILE:=${RU_BASE_DIR}/logs/step_${STEP_ID}.log}"

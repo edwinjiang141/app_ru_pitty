@@ -46,6 +46,9 @@ behaves.
 ## Environment variables and `ru_env.example.conf`
 
 `automation/conf/ru_env.example.conf` is only a sample/template. In the
+production workflow, copy it to the AWX Manual Project as `conf/ru_env.conf`,
+edit it on the AWX/k3s side before each RU change window, and run
+`DB_RU_AWX_APPLY_ENV_CONF` to distribute it to target hosts.
 production workflow, copy it to the target host as
 `/u01/patch1930/ru_automation/conf/ru_env.conf` and edit it before each RU
 change window.
@@ -56,6 +59,11 @@ Recommended AWX usage:
    `step_id`, `step_name`, `ru_run_mode`, `allow_destructive_step`, and
    `approval_report_required`. These identify the node and should not change for
    every RU change.
+2. Keep change-specific values in the AWX Project `conf/ru_env.conf`: `CHANGE_ID`,
+   backup paths, RU versioned paths, package paths, Oracle/Grid links, and site
+   command variables. The apply job installs that file onto the target hosts, so
+   operators can edit it before the change without modifying AWX Job Template
+   definitions or logging into target hosts.
 2. Keep change-specific values in target-host `ru_env.conf`: `CHANGE_ID`, backup
    paths, RU versioned paths, package paths, Oracle/Grid links, and site command
    variables. Operators can edit this file before the change without modifying
@@ -83,6 +91,31 @@ Recommended AWX test usage:
 A typical target-host usage pattern is:
 
 ```bash
+cp automation/conf/ru_env.example.conf /root/db_ru_awx_test/project/conf/ru_env.conf
+vi /root/db_ru_awx_test/project/conf/ru_env.conf
+# Then run AWX Job Template DB_RU_AWX_APPLY_ENV_CONF to install it as:
+# /u01/patch1930/ru_automation/conf/ru_env.conf on every selected target host.
+```
+
+
+## Applying `ru_env.conf` through AWX
+
+Before each RU change, operators should edit `conf/ru_env.conf` on the AWX/k3s
+side and run the AWX Job Template that uses `playbooks/apply_ru_env_conf.yml`.
+That job copies the file to every selected target host as
+`/u01/patch1930/ru_automation/conf/ru_env.conf` and validates it with
+`bash -n`.
+
+Recommended workflow order:
+
+1. `DB_RU_AWX_APPLY_ENV_CONF` (`playbooks/apply_ru_env_conf.yml`) runs on all
+   DB/RAC target hosts.
+2. Step 00/01 and the rest of the DB RU workflow run through
+   `playbooks/run_ru_step.yml` and `bin/ru_step_runner.sh`.
+
+This keeps operators from logging into target hosts directly while still
+allowing each change window to use a freshly reviewed env file.
+
 cp automation/conf/ru_env.example.conf /u01/patch1930/ru_automation/conf/ru_env.conf
 vi /u01/patch1930/ru_automation/conf/ru_env.conf
 # ru_step_runner.sh: source /u01/patch1930/ru_automation/conf/ru_env.conf before running a step
