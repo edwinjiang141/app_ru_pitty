@@ -1,4 +1,5 @@
 # AWX 无 Git 场景下 DB RU Runbook 全流程测试实施计划
+# AWX 无 Git 场景下 DB RU Runbook 全流程测试实施计划- v1
 
 > 适用状态：k3s 单节点、AWX Operator、AWX Web/Task/EE/PostgreSQL/Redis 等 Pod 已经正常 Running；当前阶段准备开始验证 `AAP_DB_RU_命令式Runbook完整开发实施方案_v3_AWX验证适配版.md` 中的 DB RU 自动化方案。
 > 关键约束：AWX 所在 k3s 环境暂时无法访问 Git；DB/RAC 目标机器位于 k3s Pod 外部；本计划以“手工导入 Project 内容 + AWX 连接外部目标主机 + mock/check/real 分阶段验证”为主线。
@@ -115,6 +116,7 @@ AWX Workflow Job Template
 **执行位置：k3s 节点。**
 
 执行：
+在 k3s 节点执行：
 
 ```bash
 kubectl get nodes -o wide
@@ -155,6 +157,7 @@ kubectl get ingress -A
 **执行位置：k3s 节点。**
 
 创建本次测试归档目录：
+建议在 k3s 节点创建一个本次测试归档目录：
 
 ```bash
 mkdir -p /root/db_ru_awx_test/evidence/{k8s,awx,project,workflow,logs,screenshots}
@@ -194,6 +197,7 @@ AWX Job 启动
 **执行位置：k3s 节点。**
 
 执行：
+在 k3s 节点执行：
 
 ```bash
 ping -c 3 <node1-ip>
@@ -279,6 +283,7 @@ kubectl -n awx run ee-debug --rm -it --restart=Never \
 
 **执行位置：k3s 节点，或者企业批准的安全管理机；以下命令以 k3s 节点为例。**
 
+`authorized_keys` 中要粘贴的“AWX 测试 SSH 公钥”不是 AWX 自动生成的，需要由实施人员在安全的管理机或 k3s 节点上生成一对专用于本次 AWX 测试的 SSH key。推荐在 k3s 节点生成并保存在测试归档目录中：
 
 ```bash
 mkdir -p /root/db_ru_awx_test/ssh
@@ -324,6 +329,10 @@ cat /root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519
 **执行位置：node1 和 node2 目标主机，使用 root 或具备创建用户权限的系统管理员账号分别执行。**
 
 在 node1/node2 上执行，其中 `<粘贴 AWX 测试 SSH 公钥>` 来自上一节生成的 `.pub` 文件：
+在 node1/node2 上执行，其中 `<粘贴 AWX 测试 SSH 公钥>` 来自上一节生成的 `.pub` 文件：
+### 5.2 目标主机创建测试账号
+
+在 node1/node2 上执行：
 
 ```bash
 useradd -m -s /bin/bash aap_ru
@@ -343,6 +352,9 @@ chown -R aap_ru:aap_ru /home/aap_ru/.ssh
 #### 5.4.1 Smoke/Mock 阶段
 
 **执行位置：node1 和 node2 目标主机，使用 root 分别执行。**
+### 5.3 sudoers 分阶段配置
+
+#### 5.3.1 Smoke/Mock 阶段
 
 只允许基础命令，不允许破坏性命令：
 
@@ -357,6 +369,7 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_mock
 #### 5.4.2 Check-only 阶段
 
 **执行位置：node1 和 node2 目标主机，使用 root 分别执行。**
+#### 5.3.2 Check-only 阶段
 
 允许切换到 grid/oracle 执行非破坏性检查命令。路径以现场实际为准：
 
@@ -372,6 +385,7 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_check
 > 注意：Check-only 阶段只放行非破坏性检查；真实阶段必须按实际命令重新做最小化授权评审。
 
 #### 5.4.3 UAT Real 阶段
+#### 5.3.3 UAT Real 阶段
 
 真实 DB RU 阶段需要按每个 step 实际命令最小化授权，不建议直接给 `ALL=(ALL) NOPASSWD: ALL`。如果测试窗口紧张，至少应做到：
 
@@ -384,6 +398,7 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_check
 ### 5.5 创建自动化目录
 
 **执行位置：node1 和 node2 目标主机，使用 root 分别执行。**
+### 5.4 创建自动化目录
 
 在 node1/node2 上创建目录：
 
@@ -539,6 +554,7 @@ kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
 **执行位置：k3s 节点。**
 
 如果 UI 不显示手工目录，先检查 AWX Task Pod 中是否能看到文件：
+如果 UI 不显示手工目录，检查：
 
 ```bash
 kubectl -n awx exec -it <awx-task-pod> -- bash -lc 'find /var/lib/awx/projects -maxdepth 3 -type f -print -exec sed -n "1,20p" {} \;'
@@ -850,6 +866,21 @@ Resources -> Inventories -> DB_RU_AWX_TEST_Inventory -> Groups -> primary_exec_n
 | Group `primary_exec_node` | Host `node1` | `primary_exec_node` |
 
 #### 7.2.4 Inventory Variables
+创建 Host：
+
+| Host | Variables |
+|---|---|
+| `node1` | `ansible_host: <node1-ip>` |
+| `node2` | `ansible_host: <node2-ip>` |
+
+创建 Group：
+
+| Group | Hosts | 用途 |
+|---|---|---|
+| `db_nodes` | `node1`, `node2` | 两节点都执行 |
+| `node1` | `node1` | 节点一滚动升级 |
+| `node2` | `node2` | 节点二滚动升级 |
+| `primary_exec_node` | `node1` | precheck、datapatch、summary、CRS 对比 |
 
 **执行位置：AWX UI 的 Inventory Variables 编辑框。**
 
@@ -920,6 +951,18 @@ SSH Private Key: 留空
 ```
 
 但本测试方案不推荐密码登录，推荐继续使用 SSH key。
+初期建议只创建一个测试 Machine Credential：
+
+| 字段 | 值 |
+|---|---|
+| Name | `DB_RU_AWX_aap_ru_credential` |
+| Organization | `DB_RU_Test_Org` |
+| Credential Type | Machine |
+| Username | `aap_ru` |
+| SSH Private Key | 粘贴 `/root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519` 的完整私钥内容，必须包含 `-----BEGIN OPENSSH PRIVATE KEY-----` 和 `-----END OPENSSH PRIVATE KEY-----` |
+| SSH Private Key | `<粘贴私钥>` |
+| Privilege Escalation Method | `sudo`，如需要 |
+| Privilege Escalation Username | `root`，如需要 |
 
 如果后续要模拟 root/grid/oracle 三类 Job Template，可逐步拆成：
 
@@ -1308,6 +1351,7 @@ Workflow Node
 > 关键点：Approval 节点不对应 `/u01/patch1930/ru_automation/steps` 下的脚本；Approval 前的 Summary/Gate 节点才对应脚本，例如 `Step 05A` 对应 `step_05A.sh`。
 
 ### 9.3 初始 mock runner
+### 9.2 初始 mock runner
 
 **执行位置：k3s 节点。**
 
@@ -1385,6 +1429,7 @@ if [[ " ${DESTRUCTIVE_STEPS} " == *" ${STEP_ID} "* ]]; then
 fi
 
 export RU_BASE_DIR STEP_ID STEP_NAME RUN_MODE PLATFORM_MODE CHANGE_ID ALLOW_DESTRUCTIVE_STEP APPROVAL_REPORT_REQUIRED LOG_FILE RESULT_FILE
+export RU_BASE_DIR STEP_ID RUN_MODE PLATFORM_MODE CHANGE_ID ALLOW_DESTRUCTIVE_STEP APPROVAL_REPORT_REQUIRED LOG_FILE RESULT_FILE
 
 {
   echo "===== DB RU STEP START ====="
@@ -1457,6 +1502,11 @@ ssh aap_ru@<node2-ip> 'chmod 755 /u01/patch1930/ru_automation/bin/ru_step_runner
 ```
 
 ### 9.4 生成 27 个 mock step
+ssh aap_ru@<node1-ip> 'chmod +x /u01/patch1930/ru_automation/bin/ru_step_runner.sh'
+ssh aap_ru@<node2-ip> 'chmod +x /u01/patch1930/ru_automation/bin/ru_step_runner.sh'
+```
+
+### 9.3 生成 27 个 mock step
 
 **执行位置：k3s 节点。**
 
@@ -1510,6 +1560,11 @@ ssh aap_ru@<node2-ip> 'chmod 755 /u01/patch1930/ru_automation/steps/step_*.sh &&
 ```
 
 ### 9.5 生成 6 个 Summary/Gate 脚本
+ssh aap_ru@<node1-ip> 'chmod +x /u01/patch1930/ru_automation/steps/step_*.sh'
+ssh aap_ru@<node2-ip> 'chmod +x /u01/patch1930/ru_automation/steps/step_*.sh'
+```
+
+### 9.4 生成 6 个 Summary/Gate 脚本
 
 Summary 脚本作为特殊 step：`05A/10A/14A/18A/19A/24A`。
 
@@ -1563,6 +1618,7 @@ scp /root/db_ru_awx_test/steps/step_05A.sh /root/db_ru_awx_test/steps/step_10A.s
 ```
 
 ### 9.6 单步 runner 验证
+### 9.5 单步 runner 验证
 
 **执行位置：AWX UI，Launch `DB_RU_AWX_RUN_CHECK` 时填写 Prompt。**
 
@@ -1585,6 +1641,7 @@ approval_report_required: false
 4. 目标主机生成 `state/step_00.done` 和 `state/step_00_result.json`。
 
 ### 9.7 `ru_step_runner.sh: Permission denied` 排查
+### 9.6 `ru_step_runner.sh: Permission denied` 排查
 
 如果 AWX Job 返回类似：
 
@@ -1808,6 +1865,10 @@ Resources -> Templates -> DB_RU_AWX_19_30_Rolling_Upgrade_TEST -> Visualizer
 8. 如果没有看到 **限制 / Limit** 字段，这是正常的：你的当前 AWX 版本在 Workflow Node 弹窗里只显示被 Job Template 开启了“启动时提示”的字段；如果 JT 没有给 Limit 开启 Prompt，这里就不会出现 Limit。解决方式见 10.5.1；
 9. 在 **变量 / Variables / Extra Variables** 中填写下方 YAML；
 10. 保存节点。
+6. 在 Prompt 页面填写：
+   - **限制 / Limit**：`db_nodes`；
+   - **额外变量 / Extra Variables**：见下方 YAML；
+7. 保存节点。
 
 Step 01 的 Extra Variables：
 
@@ -1954,6 +2015,8 @@ step_name=Step 01 - create backup dir
 | 节点别名 / Node Alias | `Step 02 - unzip ru script` |
 | 分支 / Link Type | 成功 / On Success |
 | 限制 / Limit | `primary_exec_node`，如果字段不出现，先回 Job Template 开启 Limit Prompt |
+| 分支 / Link Type | 成功 / On Success |
+| 限制 / Limit | `primary_exec_node` |
 | 额外变量 / Extra Variables | `step_id: "02"` 加公共变量 |
 
 Step 02 的 Extra Variables：
@@ -2060,6 +2123,27 @@ Approval 节点的 Deny/拒绝 和 Timeout/超时 通常也按 Failure 处理，
 | 5 | Step 05 backup | `Step 05 - backup current home` | `DB_RU_AWX_RUN_ORACLE` | `primary_exec_node` | `step_id: "05"` |
 | 6 | Step 05A Approval A Summary | `Step 05A - approval A summary` | `DB_RU_AWX_RUN_CHECK` | `primary_exec_node` | `step_id: "05A"` |
 | 7 | Approval A | `Approval A - backup confirm` | Approval | N/A | 备份完成后确认 |
+### 10.2 建议 Survey
+
+| 变量 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `change_id` | Text | `AWX-TEST-CHG0001` | 本次测试/变更编号 |
+| `ru_run_mode` | Multiple Choice | `mock` | `mock/check/real` |
+| `platform_mode` | Multiple Choice | `awx_test` | 当前平台 |
+| `allow_destructive_step` | Multiple Choice | `false` | real 模式高风险开关 |
+| `approval_report_required` | Multiple Choice | `true` | 是否要求审批报告 |
+
+### 10.3 Workflow 节点配置表
+
+| 顺序 | 节点 | JT/类型 | Limit | Extra Vars |
+|---:|---|---|---|---|
+| 1 | Step 01 创建目录 | `DB_RU_AWX_RUN_ROOT` | `db_nodes` | `step_id: "01"` |
+| 2 | Step 02 更新 goldimage 脚本 | `DB_RU_AWX_RUN_ROOT` | `primary_exec_node` | `step_id: "02"` |
+| 3 | Step 03 清理上次 image 数据 | `DB_RU_AWX_RUN_ROOT` | `primary_exec_node` | `step_id: "03"` |
+| 4 | Step 04 precheck | `DB_RU_AWX_RUN_ORACLE` | `primary_exec_node` | `step_id: "04"` |
+| 5 | Step 05 backup | `DB_RU_AWX_RUN_ORACLE` | `primary_exec_node` | `step_id: "05"` |
+| 6 | Step 05A Approval A Summary | `DB_RU_AWX_RUN_CHECK` | `primary_exec_node` | `step_id: "05A"` |
+| 7 | Approval A | Approval | N/A | 备份完成后确认 |
 | 8 | Step 06 保存 Grid 软连接 | `DB_RU_AWX_RUN_GRID` | `db_nodes` | `step_id: "06"` |
 | 9 | Step 07 保存 Oracle 软连接 | `DB_RU_AWX_RUN_ORACLE` | `db_nodes` | `step_id: "07"` |
 | 10 | Step 08 保存 CRS 状态 | `DB_RU_AWX_RUN_GRID` | `primary_exec_node` | `step_id: "08"` |
@@ -2094,6 +2178,7 @@ Approval 节点的 Deny/拒绝 和 Timeout/超时 通常也按 Failure 处理，
 | 39 | Step 27 CRS 状态对比 | `DB_RU_AWX_RUN_CHECK` | `primary_exec_node` | `step_id: "27"` |
 
 ### 10.9 Extra Vars 传递方式
+### 10.4 Extra Vars 传递方式
 
 **执行位置：AWX UI，Workflow Visualizer 中每个 Workflow Node 的 Prompt/Extra Vars。**
 
@@ -2120,6 +2205,7 @@ approval_report_required: true
 ```
 
 ### 10.10 失败分支
+### 10.5 失败分支
 
 建议从以下关键节点增加 Failure 分支到 Step 99：
 
