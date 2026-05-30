@@ -49,6 +49,9 @@ behaves.
 production workflow, copy it to the AWX Manual Project as `conf/ru_env.conf`,
 edit it on the AWX/k3s side before each RU change window, and run
 `DB_RU_AWX_APPLY_ENV_CONF` to distribute it to target hosts.
+production workflow, copy it to the target host as
+`/u01/patch1930/ru_automation/conf/ru_env.conf` and edit it before each RU
+change window.
 
 Recommended AWX usage:
 
@@ -61,10 +64,27 @@ Recommended AWX usage:
    command variables. The apply job installs that file onto the target hosts, so
    operators can edit it before the change without modifying AWX Job Template
    definitions or logging into target hosts.
+2. Keep change-specific values in target-host `ru_env.conf`: `CHANGE_ID`, backup
+   paths, RU versioned paths, package paths, Oracle/Grid links, and site command
+   variables. Operators can edit this file before the change without modifying
+   AWX Job Template definitions.
 3. `ru_step_runner.sh` sources `ru_env.conf` first, then applies non-empty AWX
    CLI arguments from `run_ru_step.yml`. Therefore AWX fixed node values override
    accidental values in `ru_env.conf`, while empty optional AWX values do not wipe
    out change-specific values from the file.
+## Environment variables and `ru_env.example.conf`
+
+`automation/conf/ru_env.example.conf` is only a sample/template. It is useful
+when many step variables are stable across runs, but it is not mandatory.
+
+Recommended AWX test usage:
+
+1. Put per-run values such as `step_id`, `ru_run_mode`, `change_id`, and
+   `allow_destructive_step` in AWX Workflow/Job Template Extra Vars.
+2. Put stable target-host values in either AWX Extra Vars or an edited target
+   file named `/u01/patch1930/ru_automation/conf/ru_env.conf`.
+3. If using the target-host `ru_env.conf`, source it in `ru_step_runner.sh`
+   before the selected `step_*.sh` is executed.
 4. Never store passwords in `ru_env.conf`; AWX Machine Credentials should carry
    SSH/sudo authentication.
 
@@ -95,6 +115,11 @@ Recommended workflow order:
 
 This keeps operators from logging into target hosts directly while still
 allowing each change window to use a freshly reviewed env file.
+
+cp automation/conf/ru_env.example.conf /u01/patch1930/ru_automation/conf/ru_env.conf
+vi /u01/patch1930/ru_automation/conf/ru_env.conf
+# ru_step_runner.sh: source /u01/patch1930/ru_automation/conf/ru_env.conf before running a step
+```
 
 ## ru_script directory
 
