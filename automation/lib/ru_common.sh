@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 # Common helpers for AWX/AAP DB RU step scripts.
+# This file is sourced by steps/step_*.sh.
+#
+# The generic target-host runner exports values that originate from:
+# - AWX Workflow/Job Template Extra Vars for fixed node inputs such as STEP_ID,
+#   STEP_NAME, RUN_MODE, ALLOW_DESTRUCTIVE_STEP, and APPROVAL_REPORT_REQUIRED.
+# - Optional target-host conf/ru_env.conf for per-change inputs such as CHANGE_ID,
+#   backup paths, RU package paths, Oracle/Grid links, and site commands.
+#
+# The defaults below are only safe fallbacks for local/mock execution. In AWX runs
+# they should already be set by ru_step_runner.sh before this file is sourced.
 # This file is sourced by steps/step_*.sh and expects the generic runner to export:
 # RU_BASE_DIR, STEP_ID, STEP_NAME, RUN_MODE, CHANGE_ID, ALLOW_DESTRUCTIVE_STEP, LOG_FILE.
 

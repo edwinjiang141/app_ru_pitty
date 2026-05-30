@@ -424,6 +424,11 @@ chmod -R 750 /u01/patch1930/ru_automation
 
 关于 `conf/ru_env.conf` 和仓库里的 `automation/conf/ru_env.example.conf`：
 
+- `ru_env.example.conf` 是样例模板，不会被 AWX 自动读取，也不会被 `step_*.sh` 自动读取；生产使用时要复制成目标机上的 `/u01/patch1930/ru_automation/conf/ru_env.conf`。
+- 固定节点参数继续放在 AWX Workflow Node Extra Vars，例如 `step_id`、`step_name`、`ru_run_mode`、`allow_destructive_step`、`approval_report_required`；这些参数定义节点身份和安全开关，不应该每次变更都改 Job Template。
+- 每次变更会变化的参数放在目标机 `ru_env.conf`，例如 `CHANGE_ID`、带 RU 版本号的备份目录、RU 包路径、gold image 路径、Oracle/Grid link 路径、现场命令变量等；变更前修改这个文件即可，不需要改 AWX 模板定义。
+- `ru_step_runner.sh` 的顺序是：先读取 `ru_env.conf`，再应用 `run_ru_step.yml` 从 AWX 传来的非空参数；因此 AWX 中固定的 `step_id`/`step_name` 会覆盖配置文件，避免跑错脚本。
+- `ru_env.conf` 只能放非敏感配置；SSH 密码、sudo 密码、私钥等仍然必须放在 AWX Credential 中。
 - `ru_env.example.conf` 只是样例模板，不会被 AWX 自动读取，也不会被 `step_*.sh` 自动读取。
 - 推荐 AWX 测试阶段优先使用 Workflow / Job Template 的 Extra Vars 传运行参数，这样每次作业的输入在 AWX 作业详情里可审计。
 - 如果某些目标机固定参数很多，可以在目标机上把模板复制为 `/u01/patch1930/ru_automation/conf/ru_env.conf`，改成现场值，然后让 `ru_step_runner.sh` 在执行 step 前 `source /u01/patch1930/ru_automation/conf/ru_env.conf`。
@@ -478,12 +483,44 @@ kubectl -n awx exec -it <awx-task-pod> -- bash -lc 'mkdir -p /var/lib/awx/projec
 mkdir -p /root/db_ru_awx_test/project/playbooks
 cat > /root/db_ru_awx_test/project/playbooks/run_ru_step.yml <<'EOF_PLAYBOOK'
 ---
+- name: Run one DB RU workflow step on target hosts
 - name: Run DB RU step through generic runner
   hosts: all
   gather_facts: false
   become: false
 
   vars:
+    # The runner lives on the target DB/RAC hosts, not inside the AWX Pod.
+    ru_base_dir: "{{ ru_base_dir | default('/u01/patch1930/ru_automation') }}"
+    ru_runner_path: "{{ ru_runner_path | default(ru_base_dir ~ '/bin/ru_step_runner.sh') }}"
+    ru_env_file: "{{ ru_env_file | default(ru_base_dir ~ '/conf/ru_env.conf') }}"
+
+  tasks:
+    - name: Explain AWX-to-runner variable handoff
+      ansible.builtin.debug:
+        msg:
+          - "AWX node Extra Vars provide fixed node values: step_id={{ step_id | default('UNSET') }}, step_name={{ step_name | default('') }}."
+          - "Per-change values such as CHANGE_ID and backup paths may come from target-host ru_env.conf: {{ ru_env_file }}."
+          - "Non-empty AWX arguments override ru_env.conf values in ru_step_runner.sh."
+
+    - name: Run selected DB RU step through target-host runner
+      ansible.builtin.shell: |
+        set -o pipefail
+        {{ ru_runner_path | quote }} \
+          --ru-base-dir {{ ru_base_dir | quote }} \
+          --env-file {{ ru_env_file | quote }} \
+          --step-id {{ step_id | mandatory | quote }} \
+          --step-name {{ step_name | default('') | quote }} \
+          --run-mode {{ ru_run_mode | default('mock') | quote }} \
+          --platform-mode {{ platform_mode | default('awx_test') | quote }} \
+          --allow-destructive-step {{ allow_destructive_step | default(false) | string | quote }} \
+          --approval-report-required {{ approval_report_required | default(true) | string | quote }} \
+          --change-id {{ change_id | default('') | quote }}
+      args:
+        executable: /bin/bash
+      register: ru_step_runner_result
+      changed_when: true
+      failed_when: ru_step_runner_result.rc != 0
     ru_base_dir: "/u01/patch1930/ru_automation"
     ru_run_mode: "{{ ru_run_mode | default('mock') }}"
     platform_mode: "{{ platform_mode | default('awx_test') }}"
@@ -1350,6 +1387,18 @@ Workflow Node
 
 > 关键点：Approval 节点不对应 `/u01/patch1930/ru_automation/steps` 下的脚本；Approval 前的 Summary/Gate 节点才对应脚本，例如 `Step 05A` 对应 `step_05A.sh`。
 
+
+### 9.2.1 `run_ru_step.yml`、`ru_step_runner.sh`、`ru_common.sh` 的关系
+
+三者是配合关系，不是互相替代：
+
+1. `playbooks/run_ru_step.yml` 在 AWX Execution Environment 中运行，负责通过 Ansible SSH 连接外部 DB/RAC 目标主机。
+2. `/u01/patch1930/ru_automation/bin/ru_step_runner.sh` 在目标主机上运行，负责读取可选的 `conf/ru_env.conf`，再接收 AWX 传来的非空参数，最终按 `STEP_ID` 选择 `steps/step_<id>.sh`。
+3. `automation/lib/ru_common.sh` 被每个 `step_*.sh` `source`，提供统一日志、异常处理、运行模式校验、破坏性步骤保护、文件/路径检查、`ru_script` Perl 调用等公共函数。
+
+所以：`ru_common.sh` 不替代 `ru_step_runner.sh`；runner 是“调度器/入口”，`ru_common.sh` 是“每个 step 共用的函数库”。
+
+### 9.3 初始 mock runner
 ### 9.3 初始 mock runner
 ### 9.2 初始 mock runner
 
@@ -1360,6 +1409,110 @@ Workflow Node
 ```bash
 cat > /root/db_ru_awx_test/ru_step_runner.sh <<'EOF_RUNNER'
 #!/usr/bin/env bash
+# Generic target-host runner for AWX/AAP DB RU workflow steps.
+#
+# Data flow:
+#   AWX Workflow/Job Template Extra Vars -> run_ru_step.yml -> this runner args
+#   target-host ru_env.conf -> this runner environment -> step_*.sh / ru_common.sh
+#
+# Precedence:
+#   1. Built-in safe defaults in this runner.
+#   2. Optional target-host env file: /u01/patch1930/ru_automation/conf/ru_env.conf.
+#   3. Non-empty CLI args from AWX run_ru_step.yml override the env file.
+#
+# This means fixed per-node values such as step_id and step_name should stay in
+# AWX node Extra Vars, while per-change values such as CHANGE_ID and backup paths
+# can be edited in ru_env.conf before the change window.
+
+set -Eeuo pipefail
+
+RU_BASE_DIR="${RU_BASE_DIR:-/u01/patch1930/ru_automation}"
+ENV_FILE=""
+STEP_ID="${STEP_ID:-}"
+STEP_NAME="${STEP_NAME:-}"
+RUN_MODE="${RUN_MODE:-mock}"
+PLATFORM_MODE="${PLATFORM_MODE:-awx_test}"
+CHANGE_ID="${CHANGE_ID:-UNKNOWN_CHANGE}"
+ALLOW_DESTRUCTIVE_STEP="${ALLOW_DESTRUCTIVE_STEP:-false}"
+APPROVAL_REPORT_REQUIRED="${APPROVAL_REPORT_REQUIRED:-true}"
+
+usage() {
+  cat <<'USAGE'
+Usage: ru_step_runner.sh --step-id <id> [options]
+
+Required fixed AWX node arguments:
+  --step-id <id>                       Workflow step id, for example 01 or 05A.
+
+Optional AWX node arguments:
+  --step-name <name>                   Human-readable step name for logs.
+  --run-mode <mock|check|real>         Execution mode. Default: mock.
+  --platform-mode <name>               Platform marker, for example awx_test.
+  --allow-destructive-step <bool>      Required as true for real destructive steps.
+  --approval-report-required <bool>    Marker used by summary/approval steps.
+  --change-id <id>                     Change id. Prefer ru_env.conf for per-change use.
+  --ru-base-dir <path>                 Target-host automation base dir.
+  --env-file <path>                    Optional env file. Default: RU_BASE_DIR/conf/ru_env.conf.
+USAGE
+}
+
+# Pre-scan only the path controls so the env file can be loaded before normal args.
+args=("$@")
+i=0
+while [[ ${i} -lt ${#args[@]} ]]; do
+  case "${args[$i]}" in
+    --ru-base-dir)
+      (( i + 1 < ${#args[@]} )) || { echo "ERROR: --ru-base-dir requires value" >&2; exit 2; }
+      RU_BASE_DIR="${args[$((i+1))]}"
+      i=$((i+2))
+      ;;
+    --env-file)
+      (( i + 1 < ${#args[@]} )) || { echo "ERROR: --env-file requires value" >&2; exit 2; }
+      ENV_FILE="${args[$((i+1))]}"
+      i=$((i+2))
+      ;;
+    *)
+      i=$((i+1))
+      ;;
+  esac
+done
+
+if [[ -z "${ENV_FILE}" ]]; then
+  ENV_FILE="${RU_BASE_DIR}/conf/ru_env.conf"
+fi
+
+if [[ -f "${ENV_FILE}" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "${ENV_FILE}"
+  set +a
+fi
+
+# After sourcing ru_env.conf, parse all AWX-supplied args. Empty values are ignored
+# so optional playbook args do not accidentally erase per-change values from env file.
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --step-id) [[ -n "${2:-}" ]] && STEP_ID="$2"; shift 2 ;;
+    --step-name) [[ -n "${2:-}" ]] && STEP_NAME="$2"; shift 2 ;;
+    --run-mode) [[ -n "${2:-}" ]] && RUN_MODE="$2"; shift 2 ;;
+    --platform-mode) [[ -n "${2:-}" ]] && PLATFORM_MODE="$2"; shift 2 ;;
+    --change-id) [[ -n "${2:-}" ]] && CHANGE_ID="$2"; shift 2 ;;
+    --allow-destructive-step) [[ -n "${2:-}" ]] && ALLOW_DESTRUCTIVE_STEP="$2"; shift 2 ;;
+    --approval-report-required) [[ -n "${2:-}" ]] && APPROVAL_REPORT_REQUIRED="$2"; shift 2 ;;
+    --ru-base-dir) [[ -n "${2:-}" ]] && RU_BASE_DIR="$2"; shift 2 ;;
+    --env-file) shift 2 ;;
+    --help|-h) usage; exit 0 ;;
+    *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+RUN_MODE="${RUN_MODE:-mock}"
+PLATFORM_MODE="${PLATFORM_MODE:-awx_test}"
+CHANGE_ID="${CHANGE_ID:-UNKNOWN_CHANGE}"
+ALLOW_DESTRUCTIVE_STEP="${ALLOW_DESTRUCTIVE_STEP:-false}"
+APPROVAL_REPORT_REQUIRED="${APPROVAL_REPORT_REQUIRED:-true}"
+
+if [[ -z "${STEP_ID}" ]]; then
+  echo "ERROR: --step-id is required; it should come from AWX workflow node Extra Vars" >&2
 set -Eeuo pipefail
 
 RU_BASE_DIR="/u01/patch1930/ru_automation"
@@ -1398,6 +1551,25 @@ if [[ -z "${STEP_NAME}" ]]; then
   STEP_NAME="step_${STEP_ID}"
 fi
 
+mkdir -p "${RU_BASE_DIR}"/{logs,state,reports,tmp}
+TS="$(date +%Y%m%d_%H%M%S)"
+LOG_FILE="${LOG_FILE:-${RU_BASE_DIR}/logs/step_${STEP_ID}_${TS}.log}"
+RESULT_FILE="${RESULT_FILE:-${RU_BASE_DIR}/state/step_${STEP_ID}_result.json}"
+DONE_FILE="${RU_BASE_DIR}/state/step_${STEP_ID}.done"
+FAILED_FILE="${RU_BASE_DIR}/state/step_${STEP_ID}.failed"
+SCRIPT_FILE="${RU_BASE_DIR}/steps/step_${STEP_ID}.sh"
+
+is_true() {
+  case "${1:-}" in
+    true|True|TRUE|yes|Yes|YES|1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+DESTRUCTIVE_STEPS="03 11 12 15 16 20 25 26"
+if [[ " ${DESTRUCTIVE_STEPS} " == *" ${STEP_ID} "* ]]; then
+  if [[ "${RUN_MODE}" == "real" ]] && ! is_true "${ALLOW_DESTRUCTIVE_STEP}"; then
+    echo "ERROR: step ${STEP_ID} is destructive; allow_destructive_step=true is required in real mode" | tee -a "${LOG_FILE}"
 # 可选：如果目标机存在固定环境配置，则在 runner 中读取。
 # 说明：AWX Extra Vars 仍然是推荐方式；ru_env.conf 只适合放目标机固定路径/实例名/脚本名等非敏感配置。
 ENV_FILE="${RU_BASE_DIR}/conf/ru_env.conf"
@@ -1428,6 +1600,14 @@ if [[ " ${DESTRUCTIVE_STEPS} " == *" ${STEP_ID} "* ]]; then
   fi
 fi
 
+if [[ ! -x "${SCRIPT_FILE}" ]]; then
+  echo "ERROR: script not found or not executable: ${SCRIPT_FILE}" | tee -a "${LOG_FILE}"
+  exit 3
+fi
+
+export RU_BASE_DIR STEP_ID STEP_NAME RUN_MODE PLATFORM_MODE CHANGE_ID ALLOW_DESTRUCTIVE_STEP APPROVAL_REPORT_REQUIRED LOG_FILE RESULT_FILE
+
+set +e
 export RU_BASE_DIR STEP_ID STEP_NAME RUN_MODE PLATFORM_MODE CHANGE_ID ALLOW_DESTRUCTIVE_STEP APPROVAL_REPORT_REQUIRED LOG_FILE RESULT_FILE
 export RU_BASE_DIR STEP_ID RUN_MODE PLATFORM_MODE CHANGE_ID ALLOW_DESTRUCTIVE_STEP APPROVAL_REPORT_REQUIRED LOG_FILE RESULT_FILE
 
@@ -1436,12 +1616,25 @@ export RU_BASE_DIR STEP_ID RUN_MODE PLATFORM_MODE CHANGE_ID ALLOW_DESTRUCTIVE_ST
   echo "timestamp=$(date -Is)"
   echo "hostname=$(hostname)"
   echo "whoami=$(whoami)"
+  echo "ru_base_dir=${RU_BASE_DIR}"
+  echo "env_file=${ENV_FILE}"
   echo "step_id=${STEP_ID}"
   echo "step_name=${STEP_NAME}"
   echo "run_mode=${RUN_MODE}"
   echo "platform_mode=${PLATFORM_MODE}"
   echo "change_id=${CHANGE_ID}"
   echo "allow_destructive_step=${ALLOW_DESTRUCTIVE_STEP}"
+  echo "approval_report_required=${APPROVAL_REPORT_REQUIRED}"
+  echo "script_file=${SCRIPT_FILE}"
+  echo "log_file=${LOG_FILE}"
+  echo "================================"
+  "${SCRIPT_FILE}"
+  rc=$?
+  echo "step_rc=${rc}"
+  exit "${rc}"
+} 2>&1 | tee -a "${LOG_FILE}"
+RC=${PIPESTATUS[0]}
+set -e
   echo "script_file=${SCRIPT_FILE}"
   echo "log_file=${LOG_FILE}"
 
@@ -1479,6 +1672,8 @@ cat > "${RESULT_FILE}" <<EOF_JSON
   "change_id": "${CHANGE_ID}",
   "host": "$(hostname)",
   "user": "$(whoami)",
+  "env_file": "${ENV_FILE}",
+  "script_file": "${SCRIPT_FILE}",
   "log_file": "${LOG_FILE}",
   "timestamp": "$(date -Is)"
 }

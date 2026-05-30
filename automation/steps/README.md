@@ -24,6 +24,46 @@ The scripts support three modes through `RUN_MODE`:
 Destructive steps require `ALLOW_DESTRUCTIVE_STEP=true` in real mode.
 
 
+
+## `run_ru_step.yml`, `ru_step_runner.sh`, and `ru_common.sh`
+
+They are cooperative layers, not replacements for each other:
+
+1. `playbooks/run_ru_step.yml` runs inside AWX Execution Environment and uses
+   Ansible SSH to reach the external DB/RAC target host.
+2. `/u01/patch1930/ru_automation/bin/ru_step_runner.sh` runs on the target host.
+   It reads optional `conf/ru_env.conf`, applies non-empty AWX arguments, exports
+   the final environment, maps `STEP_ID` to `steps/step_<id>.sh`, and records the
+   per-step result.
+3. `automation/lib/ru_common.sh` is sourced by each `step_*.sh`. It provides
+   common logging, failure handling, mode validation, destructive-step checks,
+   file/path checks, and Perl `ru_script` invocation helpers.
+
+Therefore `ru_common.sh` does not replace `ru_step_runner.sh`; the runner chooses
+which step to execute, and `ru_common.sh` standardizes how that selected step
+behaves.
+
+## Environment variables and `ru_env.example.conf`
+
+`automation/conf/ru_env.example.conf` is only a sample/template. In the
+production workflow, copy it to the target host as
+`/u01/patch1930/ru_automation/conf/ru_env.conf` and edit it before each RU
+change window.
+
+Recommended AWX usage:
+
+1. Keep fixed workflow-node values in AWX Workflow Node Extra Vars:
+   `step_id`, `step_name`, `ru_run_mode`, `allow_destructive_step`, and
+   `approval_report_required`. These identify the node and should not change for
+   every RU change.
+2. Keep change-specific values in target-host `ru_env.conf`: `CHANGE_ID`, backup
+   paths, RU versioned paths, package paths, Oracle/Grid links, and site command
+   variables. Operators can edit this file before the change without modifying
+   AWX Job Template definitions.
+3. `ru_step_runner.sh` sources `ru_env.conf` first, then applies non-empty AWX
+   CLI arguments from `run_ru_step.yml`. Therefore AWX fixed node values override
+   accidental values in `ru_env.conf`, while empty optional AWX values do not wipe
+   out change-specific values from the file.
 ## Environment variables and `ru_env.example.conf`
 
 `automation/conf/ru_env.example.conf` is only a sample/template. It is useful
