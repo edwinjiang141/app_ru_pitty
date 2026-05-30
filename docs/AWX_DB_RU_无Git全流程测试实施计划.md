@@ -422,6 +422,13 @@ chmod -R 750 /u01/patch1930/ru_automation
 | `tmp` | 临时文件 |
 | `packages` | RU 包、gold image、脚本包等 |
 
+关于 `conf/ru_env.conf` 和仓库里的 `automation/conf/ru_env.example.conf`：
+
+- `ru_env.example.conf` 只是样例模板，不会被 AWX 自动读取，也不会被 `step_*.sh` 自动读取。
+- 推荐 AWX 测试阶段优先使用 Workflow / Job Template 的 Extra Vars 传运行参数，这样每次作业的输入在 AWX 作业详情里可审计。
+- 如果某些目标机固定参数很多，可以在目标机上把模板复制为 `/u01/patch1930/ru_automation/conf/ru_env.conf`，改成现场值，然后让 `ru_step_runner.sh` 在执行 step 前 `source /u01/patch1930/ru_automation/conf/ru_env.conf`。
+- `ru_env.conf` 只能放路径、实例名、脚本名、现场命令等非敏感配置；SSH 密码、sudo 密码、私钥等仍然必须放在 AWX Credential 中。
+
 ---
 
 ## 6. 阶段 3：无 Git 场景下手工导入 AWX Project 内容
@@ -1389,6 +1396,16 @@ esac
 
 if [[ -z "${STEP_NAME}" ]]; then
   STEP_NAME="step_${STEP_ID}"
+fi
+
+# 可选：如果目标机存在固定环境配置，则在 runner 中读取。
+# 说明：AWX Extra Vars 仍然是推荐方式；ru_env.conf 只适合放目标机固定路径/实例名/脚本名等非敏感配置。
+ENV_FILE="${RU_BASE_DIR}/conf/ru_env.conf"
+if [[ -f "${ENV_FILE}" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "${ENV_FILE}"
+  set +a
 fi
 
 mkdir -p "${RU_BASE_DIR}"/{logs,state,reports,tmp}
