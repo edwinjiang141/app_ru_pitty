@@ -64,6 +64,19 @@ Recommended AWX usage:
    CLI arguments from `run_ru_step.yml`. Therefore AWX fixed node values override
    accidental values in `ru_env.conf`, while empty optional AWX values do not wipe
    out change-specific values from the file.
+## Environment variables and `ru_env.example.conf`
+
+`automation/conf/ru_env.example.conf` is only a sample/template. It is useful
+when many step variables are stable across runs, but it is not mandatory.
+
+Recommended AWX test usage:
+
+1. Put per-run values such as `step_id`, `ru_run_mode`, `change_id`, and
+   `allow_destructive_step` in AWX Workflow/Job Template Extra Vars.
+2. Put stable target-host values in either AWX Extra Vars or an edited target
+   file named `/u01/patch1930/ru_automation/conf/ru_env.conf`.
+3. If using the target-host `ru_env.conf`, source it in `ru_step_runner.sh`
+   before the selected `step_*.sh` is executed.
 4. Never store passwords in `ru_env.conf`; AWX Machine Credentials should carry
    SSH/sudo authentication.
 
