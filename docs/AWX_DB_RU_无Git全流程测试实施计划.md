@@ -1,4 +1,5 @@
 # AWX 无 Git 场景下 DB RU Runbook 全流程测试实施计划
+# AWX 无 Git 场景下 DB RU Runbook 全流程测试实施计划- v1
 
 > 适用状态：k3s 单节点、AWX Operator、AWX Web/Task/EE/PostgreSQL/Redis 等 Pod 已经正常 Running；当前阶段准备开始验证 `AAP_DB_RU_命令式Runbook完整开发实施方案_v3_AWX验证适配版.md` 中的 DB RU 自动化方案。
 > 关键约束：AWX 所在 k3s 环境暂时无法访问 Git；DB/RAC 目标机器位于 k3s Pod 外部；本计划以“手工导入 Project 内容 + AWX 连接外部目标主机 + mock/check/real 分阶段验证”为主线。
@@ -117,6 +118,7 @@ AWX Workflow Job Template
 **执行位置：k3s 节点。**
 
 执行：
+在 k3s 节点执行：
 
 ```bash
 kubectl get nodes -o wide
@@ -157,6 +159,7 @@ kubectl get ingress -A
 **执行位置：k3s 节点。**
 
 创建本次测试归档目录：
+建议在 k3s 节点创建一个本次测试归档目录：
 
 ```bash
 mkdir -p /root/db_ru_awx_test/evidence/{k8s,awx,project,workflow,logs,screenshots}
@@ -196,6 +199,7 @@ AWX Job 启动
 **执行位置：k3s 节点。**
 
 执行：
+在 k3s 节点执行：
 
 ```bash
 ping -c 3 <node1-ip>
@@ -281,6 +285,7 @@ kubectl -n awx run ee-debug --rm -it --restart=Never \
 
 **执行位置：k3s 节点，或者企业批准的安全管理机；以下命令以 k3s 节点为例。**
 
+`authorized_keys` 中要粘贴的“AWX 测试 SSH 公钥”不是 AWX 自动生成的，需要由实施人员在安全的管理机或 k3s 节点上生成一对专用于本次 AWX 测试的 SSH key。推荐在 k3s 节点生成并保存在测试归档目录中：
 
 ```bash
 mkdir -p /root/db_ru_awx_test/ssh
@@ -326,6 +331,10 @@ cat /root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519
 **执行位置：node1 和 node2 目标主机，使用 root 或具备创建用户权限的系统管理员账号分别执行。**
 
 在 node1/node2 上执行，其中 `<粘贴 AWX 测试 SSH 公钥>` 来自上一节生成的 `.pub` 文件：
+在 node1/node2 上执行，其中 `<粘贴 AWX 测试 SSH 公钥>` 来自上一节生成的 `.pub` 文件：
+### 5.2 目标主机创建测试账号
+
+在 node1/node2 上执行：
 
 ```bash
 useradd -m -s /bin/bash aap_ru
@@ -345,6 +354,9 @@ chown -R aap_ru:aap_ru /home/aap_ru/.ssh
 #### 5.4.1 Smoke/Mock 阶段
 
 **执行位置：node1 和 node2 目标主机，使用 root 分别执行。**
+### 5.3 sudoers 分阶段配置
+
+#### 5.3.1 Smoke/Mock 阶段
 
 只允许基础命令，不允许破坏性命令：
 
@@ -359,6 +371,7 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_mock
 #### 5.4.2 Check-only 阶段
 
 **执行位置：node1 和 node2 目标主机，使用 root 分别执行。**
+#### 5.3.2 Check-only 阶段
 
 允许切换到 grid/oracle 执行非破坏性检查命令。路径以现场实际为准：
 
@@ -374,6 +387,7 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_check
 > 注意：Check-only 阶段只放行非破坏性检查；真实阶段必须按实际命令重新做最小化授权评审。
 
 #### 5.4.3 UAT Real 阶段
+#### 5.3.3 UAT Real 阶段
 
 真实 DB RU 阶段需要按每个 step 实际命令最小化授权，不建议直接给 `ALL=(ALL) NOPASSWD: ALL`。如果测试窗口紧张，至少应做到：
 
@@ -386,6 +400,7 @@ visudo -cf /etc/sudoers.d/aap_ru_db_ru_check
 ### 5.5 创建自动化目录
 
 **执行位置：node1 和 node2 目标主机，使用 root 分别执行。**
+### 5.4 创建自动化目录
 
 在 node1/node2 上创建目录：
 
@@ -416,6 +431,15 @@ chmod -R 750 /u01/patch1930/ru_automation
 - 每次变更会变化的参数放在 AWX Project 的 `conf/ru_env.conf`，例如 `CHANGE_ID`、带 RU 版本号的备份目录、RU 包路径、gold image 路径、Oracle/Grid link 路径、现场命令变量等；变更前在 AWX/k3s 侧修改这个文件，然后运行应用配置 Job，不需要改 AWX 模板定义，也不需要人工登录目标机。
 - `ru_step_runner.sh` 的顺序是：先读取 `ru_env.conf`，再应用 `run_ru_step.yml` 从 AWX 传来的非空参数；因此 AWX 中固定的 `step_id`/`step_name` 会覆盖配置文件，避免跑错脚本。
 - `ru_env.conf` 只能放非敏感配置；SSH 密码、sudo 密码、私钥等仍然必须放在 AWX Credential 中。
+- `ru_env.example.conf` 是样例模板，不会被 AWX 自动读取，也不会被 `step_*.sh` 自动读取；生产使用时要复制成目标机上的 `/u01/patch1930/ru_automation/conf/ru_env.conf`。
+- 固定节点参数继续放在 AWX Workflow Node Extra Vars，例如 `step_id`、`step_name`、`ru_run_mode`、`allow_destructive_step`、`approval_report_required`；这些参数定义节点身份和安全开关，不应该每次变更都改 Job Template。
+- 每次变更会变化的参数放在目标机 `ru_env.conf`，例如 `CHANGE_ID`、带 RU 版本号的备份目录、RU 包路径、gold image 路径、Oracle/Grid link 路径、现场命令变量等；变更前修改这个文件即可，不需要改 AWX 模板定义。
+- `ru_step_runner.sh` 的顺序是：先读取 `ru_env.conf`，再应用 `run_ru_step.yml` 从 AWX 传来的非空参数；因此 AWX 中固定的 `step_id`/`step_name` 会覆盖配置文件，避免跑错脚本。
+- `ru_env.conf` 只能放非敏感配置；SSH 密码、sudo 密码、私钥等仍然必须放在 AWX Credential 中。
+- `ru_env.example.conf` 只是样例模板，不会被 AWX 自动读取，也不会被 `step_*.sh` 自动读取。
+- 推荐 AWX 测试阶段优先使用 Workflow / Job Template 的 Extra Vars 传运行参数，这样每次作业的输入在 AWX 作业详情里可审计。
+- 如果某些目标机固定参数很多，可以在目标机上把模板复制为 `/u01/patch1930/ru_automation/conf/ru_env.conf`，改成现场值，然后让 `ru_step_runner.sh` 在执行 step 前 `source /u01/patch1930/ru_automation/conf/ru_env.conf`。
+- `ru_env.conf` 只能放路径、实例名、脚本名、现场命令等非敏感配置；SSH 密码、sudo 密码、私钥等仍然必须放在 AWX Credential 中。
 
 ---
 
@@ -482,6 +506,18 @@ mkdir -p /root/db_ru_awx_test/project/{playbooks,conf}
 cat > /root/db_ru_awx_test/project/playbooks/run_ru_step.yml <<'EOF_PLAYBOOK'
 ---
 - name: Run one DB RU workflow step on target hosts
+从 k3s 节点复制本地项目文件进去：
+
+```bash
+mkdir -p /root/db_ru_awx_test/project/{playbooks,conf}
+cat > /root/db_ru_awx_test/project/playbooks/run_ru_step.yml <<'EOF_PLAYBOOK'
+---
+- name: Run one DB RU workflow step on target hosts
+mkdir -p /root/db_ru_awx_test/project/playbooks
+cat > /root/db_ru_awx_test/project/playbooks/run_ru_step.yml <<'EOF_PLAYBOOK'
+---
+- name: Run one DB RU workflow step on target hosts
+- name: Run DB RU step through generic runner
   hosts: all
   gather_facts: false
   become: false
@@ -532,6 +568,10 @@ EOF_PLAYBOOK
 内容如下。注意：下面这段 YAML 是 `apply_ru_env_conf.yml` 的内容，不属于 `ru_env.conf`。
 
 ```bash
+
+kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
+  <awx-task-pod>:/var/lib/awx/projects/db-ru-automation/playbooks/run_ru_step.yml
+
 cat > /root/db_ru_awx_test/project/playbooks/apply_ru_env_conf.yml <<'EOF_APPLY_ENV'
 ---
 - name: Apply DB RU env configuration to target hosts
@@ -629,6 +669,7 @@ EOF_APPLY_ENV
 内容如下：
 
 ```bash
+
 cat > /root/db_ru_awx_test/project/conf/ru_env.conf <<'EOF_RU_ENV'
 # Example environment file for DB RU scripts.
 #
@@ -778,10 +819,68 @@ vi /root/db_ru_awx_test/project/conf/ru_env.conf
 ```bash
 kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
   <awx-task-pod>:/var/lib/awx/projects/db-ru-automation/playbooks/run_ru_step.yml
+
+# 每次变更前，在 k3s/AWX 侧编辑这个文件，填入本次 CHANGE_ID、RU 版本路径、备份路径等。
+vi /root/db_ru_awx_test/project/conf/ru_env.conf
+
 kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/apply_ru_env_conf.yml \
   <awx-task-pod>:/var/lib/awx/projects/db-ru-automation/playbooks/apply_ru_env_conf.yml
 kubectl -n awx cp /root/db_ru_awx_test/project/conf/ru_env.conf \
   <awx-task-pod>:/var/lib/awx/projects/db-ru-automation/conf/ru_env.conf
+    ru_base_dir: "/u01/patch1930/ru_automation"
+    ru_run_mode: "{{ ru_run_mode | default('mock') }}"
+    platform_mode: "{{ platform_mode | default('awx_test') }}"
+    allow_destructive_step: "{{ allow_destructive_step | default(false) }}"
+    change_id: "{{ change_id | default('AWX-TEST-CHG0001') }}"
+    step_name: "{{ step_name | default('step_' ~ step_id | default('unknown')) }}"
+    approval_report_required: "{{ approval_report_required | default(true) }}"
+
+  tasks:
+    - name: Validate required variable step_id
+      ansible.builtin.assert:
+        that:
+          - step_id is defined
+          - step_id | string | length > 0
+        fail_msg: "step_id is required, for example step_id=04"
+
+    - name: Show runtime parameters
+      ansible.builtin.debug:
+        msg:
+          - "platform_mode={{ platform_mode }}"
+          - "ru_run_mode={{ ru_run_mode }}"
+          - "step_id={{ step_id }}"
+          - "step_name={{ step_name }}"
+          - "change_id={{ change_id }}"
+          - "allow_destructive_step={{ allow_destructive_step }}"
+          - "approval_report_required={{ approval_report_required }}"
+          - "inventory_hostname={{ inventory_hostname }}"
+
+    - name: Run RU step runner
+      ansible.builtin.shell: |
+        set -o pipefail
+        # Workflow Node 只传 step_id；真正执行哪个 sh，由目标主机上的 ru_step_runner.sh 决定。
+        # 例如 step_id=05A -> /u01/patch1930/ru_automation/steps/step_05A.sh
+        {{ ru_base_dir }}/bin/ru_step_runner.sh \
+          --step-id "{{ step_id }}" \
+          --step-name "{{ step_name }}" \
+          --run-mode "{{ ru_run_mode }}" \
+          --platform-mode "{{ platform_mode }}" \
+          --change-id "{{ change_id }}" \
+          --allow-destructive-step "{{ allow_destructive_step }}" \
+          --approval-report-required "{{ approval_report_required }}"
+      args:
+        executable: /bin/bash
+      register: ru_step_result
+      changed_when: true
+      failed_when: ru_step_result.rc != 0
+
+    - name: Print RU step output
+      ansible.builtin.debug:
+        var: ru_step_result.stdout_lines
+EOF_PLAYBOOK
+
+kubectl -n awx cp /root/db_ru_awx_test/project/playbooks/run_ru_step.yml \
+  <awx-task-pod>:/var/lib/awx/projects/db-ru-automation/playbooks/run_ru_step.yml
 ```
 
 **执行位置：AWX UI，Resources -> Projects -> Add。**
@@ -798,12 +897,14 @@ kubectl -n awx cp /root/db_ru_awx_test/project/conf/ru_env.conf \
 **执行位置：k3s 节点。**
 
 如果 UI 不显示手工目录，先检查 AWX Task Pod 中是否能看到文件：
+如果 UI 不显示手工目录，检查：
 
 ```bash
 kubectl -n awx exec -it <awx-task-pod> -- bash -lc 'find /var/lib/awx/projects -maxdepth 3 -type f -print -exec sed -n "1,20p" {} \;'
 ```
 
 ### 6.2.6 Playbook 目录下拉框为空时的原因和处理
+### 6.2.1 Playbook 目录下拉框为空时的原因和处理
 
 如果执行上面的 `find` 已经能在 **AWX Task Pod** 中看到：
 
@@ -1109,6 +1210,21 @@ Resources -> Inventories -> DB_RU_AWX_TEST_Inventory -> Groups -> primary_exec_n
 | Group `primary_exec_node` | Host `node1` | `primary_exec_node` |
 
 #### 7.2.4 Inventory Variables
+创建 Host：
+
+| Host | Variables |
+|---|---|
+| `node1` | `ansible_host: <node1-ip>` |
+| `node2` | `ansible_host: <node2-ip>` |
+
+创建 Group：
+
+| Group | Hosts | 用途 |
+|---|---|---|
+| `db_nodes` | `node1`, `node2` | 两节点都执行 |
+| `node1` | `node1` | 节点一滚动升级 |
+| `node2` | `node2` | 节点二滚动升级 |
+| `primary_exec_node` | `node1` | precheck、datapatch、summary、CRS 对比 |
 
 **执行位置：AWX UI 的 Inventory Variables 编辑框。**
 
@@ -1179,6 +1295,18 @@ SSH Private Key: 留空
 ```
 
 但本测试方案不推荐密码登录，推荐继续使用 SSH key。
+初期建议只创建一个测试 Machine Credential：
+
+| 字段 | 值 |
+|---|---|
+| Name | `DB_RU_AWX_aap_ru_credential` |
+| Organization | `DB_RU_Test_Org` |
+| Credential Type | Machine |
+| Username | `aap_ru` |
+| SSH Private Key | 粘贴 `/root/db_ru_awx_test/ssh/aap_ru_awx_test_ed25519` 的完整私钥内容，必须包含 `-----BEGIN OPENSSH PRIVATE KEY-----` 和 `-----END OPENSSH PRIVATE KEY-----` |
+| SSH Private Key | `<粘贴私钥>` |
+| Privilege Escalation Method | `sudo`，如需要 |
+| Privilege Escalation Username | `root`，如需要 |
 
 如果后续要模拟 root/grid/oracle 三类 Job Template，可逐步拆成：
 
@@ -1253,6 +1381,7 @@ RU_SCRIPT_DIR=/u01/patch1930/ru_automation/packages/ru_script
 如果这个 Job 失败，不要继续后面的 RU Workflow。先修复 `conf/ru_env.conf` 语法、目标目录权限或 AWX Credential。
 
 ### 8.3 每个 RU Step JT 的共同配置
+### 8.2 每个 JT 的共同配置
 
 | 字段 | 值 |
 |---|---|
@@ -1268,6 +1397,7 @@ RU_SCRIPT_DIR=/u01/patch1930/ru_automation/packages/ru_script
 | Timeout | Smoke/Mock 600 秒；真实阶段按 step 调整 |
 
 ### 8.4 单步 Smoke 测试
+### 8.3 单步 Smoke 测试
 
 **执行位置：AWX UI，打开 `DB_RU_AWX_RUN_CHECK` 并点击 Launch。**
 
@@ -1292,6 +1422,7 @@ approval_report_required: false
 此时目标主机还没有 runner，预期会失败在 `ru_step_runner.sh not found`。这个失败可以接受，说明 AWX 已经能运行 Project playbook 并尝试连接目标主机。随后进入 runner 落地。
 
 ### 8.5 Smoke 作业一直等待输出时的排查
+### 8.4 Smoke 作业一直等待输出时的排查
 
 如果 AWX UI 一直显示“等待作业输出”，同时 k3s 中出现类似下面的 Pod：
 
@@ -1626,6 +1757,8 @@ Workflow Node
 所以：`ru_common.sh` 不替代 `ru_step_runner.sh`；runner 是“调度器/入口”，`ru_common.sh` 是“每个 step 共用的函数库”。
 
 ### 9.3 初始 mock runner
+### 9.3 初始 mock runner
+### 9.2 初始 mock runner
 
 **执行位置：k3s 节点。**
 
@@ -1738,6 +1871,32 @@ APPROVAL_REPORT_REQUIRED="${APPROVAL_REPORT_REQUIRED:-true}"
 
 if [[ -z "${STEP_ID}" ]]; then
   echo "ERROR: --step-id is required; it should come from AWX workflow node Extra Vars" >&2
+set -Eeuo pipefail
+
+RU_BASE_DIR="/u01/patch1930/ru_automation"
+STEP_ID=""
+STEP_NAME=""
+RUN_MODE="mock"
+PLATFORM_MODE="awx_test"
+CHANGE_ID="AWX-TEST-CHG0001"
+ALLOW_DESTRUCTIVE_STEP="false"
+APPROVAL_REPORT_REQUIRED="true"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --step-id) STEP_ID="$2"; shift 2 ;;
+    --step-name) STEP_NAME="$2"; shift 2 ;;
+    --run-mode) RUN_MODE="$2"; shift 2 ;;
+    --platform-mode) PLATFORM_MODE="$2"; shift 2 ;;
+    --change-id) CHANGE_ID="$2"; shift 2 ;;
+    --allow-destructive-step) ALLOW_DESTRUCTIVE_STEP="$2"; shift 2 ;;
+    --approval-report-required) APPROVAL_REPORT_REQUIRED="$2"; shift 2 ;;
+    *) echo "Unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [[ -z "${STEP_ID}" ]]; then
+  echo "ERROR: --step-id is required" >&2
   exit 2
 fi
 
@@ -1769,6 +1928,32 @@ DESTRUCTIVE_STEPS="03 11 12 15 16 20 25 26"
 if [[ " ${DESTRUCTIVE_STEPS} " == *" ${STEP_ID} "* ]]; then
   if [[ "${RUN_MODE}" == "real" ]] && ! is_true "${ALLOW_DESTRUCTIVE_STEP}"; then
     echo "ERROR: step ${STEP_ID} is destructive; allow_destructive_step=true is required in real mode" | tee -a "${LOG_FILE}"
+# 可选：如果目标机存在固定环境配置，则在 runner 中读取。
+# 说明：AWX Extra Vars 仍然是推荐方式；ru_env.conf 只适合放目标机固定路径/实例名/脚本名等非敏感配置。
+ENV_FILE="${RU_BASE_DIR}/conf/ru_env.conf"
+if [[ -f "${ENV_FILE}" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "${ENV_FILE}"
+  set +a
+fi
+
+mkdir -p "${RU_BASE_DIR}"/{logs,state,reports,tmp}
+TS="$(date +%Y%m%d_%H%M%S)"
+LOG_FILE="${RU_BASE_DIR}/logs/step_${STEP_ID}_${TS}.log"
+RESULT_FILE="${RU_BASE_DIR}/state/step_${STEP_ID}_result.json"
+DONE_FILE="${RU_BASE_DIR}/state/step_${STEP_ID}.done"
+FAILED_FILE="${RU_BASE_DIR}/state/step_${STEP_ID}.failed"
+# 核心映射规则：step_id 与 steps 目录下脚本文件一一对应。
+# 例如：--step-id 01  -> steps/step_01.sh
+#      --step-id 05A -> steps/step_05A.sh
+#      --step-id 99  -> steps/step_99.sh
+SCRIPT_FILE="${RU_BASE_DIR}/steps/step_${STEP_ID}.sh"
+
+DESTRUCTIVE_STEPS="03 11 12 15 16 20 25 26"
+if [[ " ${DESTRUCTIVE_STEPS} " == *" ${STEP_ID} "* ]]; then
+  if [[ "${RUN_MODE}" == "real" && "${ALLOW_DESTRUCTIVE_STEP}" != "true" ]]; then
+    echo "ERROR: step ${STEP_ID} is destructive, allow_destructive_step=true is required in real mode" | tee -a "${LOG_FILE}"
     exit 9
   fi
 fi
@@ -1781,6 +1966,9 @@ fi
 export RU_BASE_DIR STEP_ID STEP_NAME RUN_MODE PLATFORM_MODE CHANGE_ID ALLOW_DESTRUCTIVE_STEP APPROVAL_REPORT_REQUIRED LOG_FILE RESULT_FILE
 
 set +e
+export RU_BASE_DIR STEP_ID STEP_NAME RUN_MODE PLATFORM_MODE CHANGE_ID ALLOW_DESTRUCTIVE_STEP APPROVAL_REPORT_REQUIRED LOG_FILE RESULT_FILE
+export RU_BASE_DIR STEP_ID RUN_MODE PLATFORM_MODE CHANGE_ID ALLOW_DESTRUCTIVE_STEP APPROVAL_REPORT_REQUIRED LOG_FILE RESULT_FILE
+
 {
   echo "===== DB RU STEP START ====="
   echo "timestamp=$(date -Is)"
@@ -1805,6 +1993,21 @@ set +e
 } 2>&1 | tee -a "${LOG_FILE}"
 RC=${PIPESTATUS[0]}
 set -e
+  echo "script_file=${SCRIPT_FILE}"
+  echo "log_file=${LOG_FILE}"
+
+  if [[ ! -x "${SCRIPT_FILE}" ]]; then
+    echo "ERROR: script not found or not executable: ${SCRIPT_FILE}"
+    exit 3
+  fi
+
+  # 执行由 step_id 映射出来的脚本。
+  "${SCRIPT_FILE}"
+  RC=$?
+  echo "step_rc=${RC}"
+  exit "${RC}"
+} 2>&1 | tee -a "${LOG_FILE}"
+RC=${PIPESTATUS[0]}
 
 if [[ ${RC} -eq 0 ]]; then
   rm -f "${FAILED_FILE}"
@@ -1852,6 +2055,11 @@ ssh aap_ru@<node2-ip> 'chmod 755 /u01/patch1930/ru_automation/bin/ru_step_runner
 ```
 
 ### 9.4 生成 27 个 mock step
+ssh aap_ru@<node1-ip> 'chmod +x /u01/patch1930/ru_automation/bin/ru_step_runner.sh'
+ssh aap_ru@<node2-ip> 'chmod +x /u01/patch1930/ru_automation/bin/ru_step_runner.sh'
+```
+
+### 9.3 生成 27 个 mock step
 
 **执行位置：k3s 节点。**
 
@@ -1905,6 +2113,11 @@ ssh aap_ru@<node2-ip> 'chmod 755 /u01/patch1930/ru_automation/steps/step_*.sh &&
 ```
 
 ### 9.5 生成 6 个 Summary/Gate 脚本
+ssh aap_ru@<node1-ip> 'chmod +x /u01/patch1930/ru_automation/steps/step_*.sh'
+ssh aap_ru@<node2-ip> 'chmod +x /u01/patch1930/ru_automation/steps/step_*.sh'
+```
+
+### 9.4 生成 6 个 Summary/Gate 脚本
 
 Summary 脚本作为特殊 step：`05A/10A/14A/18A/19A/24A`。
 
@@ -1958,6 +2171,7 @@ scp /root/db_ru_awx_test/steps/step_05A.sh /root/db_ru_awx_test/steps/step_10A.s
 ```
 
 ### 9.6 单步 runner 验证
+### 9.5 单步 runner 验证
 
 **执行位置：AWX UI，Launch `DB_RU_AWX_RUN_CHECK` 时填写 Prompt。**
 
@@ -1980,6 +2194,7 @@ approval_report_required: false
 4. 目标主机生成 `state/step_00.done` 和 `state/step_00_result.json`。
 
 ### 9.7 `ru_step_runner.sh: Permission denied` 排查
+### 9.6 `ru_step_runner.sh: Permission denied` 排查
 
 如果 AWX Job 返回类似：
 
@@ -2203,6 +2418,10 @@ Resources -> Templates -> DB_RU_AWX_19_30_Rolling_Upgrade_TEST -> Visualizer
 8. 如果没有看到 **限制 / Limit** 字段，这是正常的：你的当前 AWX 版本在 Workflow Node 弹窗里只显示被 Job Template 开启了“启动时提示”的字段；如果 JT 没有给 Limit 开启 Prompt，这里就不会出现 Limit。解决方式见 10.5.1；
 9. 在 **变量 / Variables / Extra Variables** 中填写下方 YAML；
 10. 保存节点。
+6. 在 Prompt 页面填写：
+   - **限制 / Limit**：`db_nodes`；
+   - **额外变量 / Extra Variables**：见下方 YAML；
+7. 保存节点。
 
 Step 01 的 Extra Variables：
 
@@ -2349,6 +2568,8 @@ step_name=Step 01 - create backup dir
 | 节点别名 / Node Alias | `Step 02 - unzip ru script` |
 | 分支 / Link Type | 成功 / On Success |
 | 限制 / Limit | `primary_exec_node`，如果字段不出现，先回 Job Template 开启 Limit Prompt |
+| 分支 / Link Type | 成功 / On Success |
+| 限制 / Limit | `primary_exec_node` |
 | 额外变量 / Extra Variables | `step_id: "02"` 加公共变量 |
 
 Step 02 的 Extra Variables：
@@ -2455,6 +2676,27 @@ Approval 节点的 Deny/拒绝 和 Timeout/超时 通常也按 Failure 处理，
 | 5 | Step 05 backup | `Step 05 - backup current home` | `DB_RU_AWX_RUN_ORACLE` | `primary_exec_node` | `step_id: "05"` |
 | 6 | Step 05A Approval A Summary | `Step 05A - approval A summary` | `DB_RU_AWX_RUN_CHECK` | `primary_exec_node` | `step_id: "05A"` |
 | 7 | Approval A | `Approval A - backup confirm` | Approval | N/A | 备份完成后确认 |
+### 10.2 建议 Survey
+
+| 变量 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `change_id` | Text | `AWX-TEST-CHG0001` | 本次测试/变更编号 |
+| `ru_run_mode` | Multiple Choice | `mock` | `mock/check/real` |
+| `platform_mode` | Multiple Choice | `awx_test` | 当前平台 |
+| `allow_destructive_step` | Multiple Choice | `false` | real 模式高风险开关 |
+| `approval_report_required` | Multiple Choice | `true` | 是否要求审批报告 |
+
+### 10.3 Workflow 节点配置表
+
+| 顺序 | 节点 | JT/类型 | Limit | Extra Vars |
+|---:|---|---|---|---|
+| 1 | Step 01 创建目录 | `DB_RU_AWX_RUN_ROOT` | `db_nodes` | `step_id: "01"` |
+| 2 | Step 02 更新 goldimage 脚本 | `DB_RU_AWX_RUN_ROOT` | `primary_exec_node` | `step_id: "02"` |
+| 3 | Step 03 清理上次 image 数据 | `DB_RU_AWX_RUN_ROOT` | `primary_exec_node` | `step_id: "03"` |
+| 4 | Step 04 precheck | `DB_RU_AWX_RUN_ORACLE` | `primary_exec_node` | `step_id: "04"` |
+| 5 | Step 05 backup | `DB_RU_AWX_RUN_ORACLE` | `primary_exec_node` | `step_id: "05"` |
+| 6 | Step 05A Approval A Summary | `DB_RU_AWX_RUN_CHECK` | `primary_exec_node` | `step_id: "05A"` |
+| 7 | Approval A | Approval | N/A | 备份完成后确认 |
 | 8 | Step 06 保存 Grid 软连接 | `DB_RU_AWX_RUN_GRID` | `db_nodes` | `step_id: "06"` |
 | 9 | Step 07 保存 Oracle 软连接 | `DB_RU_AWX_RUN_ORACLE` | `db_nodes` | `step_id: "07"` |
 | 10 | Step 08 保存 CRS 状态 | `DB_RU_AWX_RUN_GRID` | `primary_exec_node` | `step_id: "08"` |
@@ -2489,6 +2731,7 @@ Approval 节点的 Deny/拒绝 和 Timeout/超时 通常也按 Failure 处理，
 | 39 | Step 27 CRS 状态对比 | `DB_RU_AWX_RUN_CHECK` | `primary_exec_node` | `step_id: "27"` |
 
 ### 10.9 Extra Vars 传递方式
+### 10.4 Extra Vars 传递方式
 
 **执行位置：AWX UI，Workflow Visualizer 中每个 Workflow Node 的 Prompt/Extra Vars。**
 
@@ -2515,6 +2758,7 @@ approval_report_required: true
 ```
 
 ### 10.10 失败分支
+### 10.5 失败分支
 
 建议从以下关键节点增加 Failure 分支到 Step 99：
 

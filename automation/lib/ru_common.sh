@@ -11,6 +11,8 @@
 # The defaults below are only safe fallbacks for local/mock execution. In AWX runs
 # they should already be set by ru_step_runner.sh before this file is sourced.
 # Keep this default list aligned with automation/conf/ru_env.example.conf.
+# This file is sourced by steps/step_*.sh and expects the generic runner to export:
+# RU_BASE_DIR, STEP_ID, STEP_NAME, RUN_MODE, CHANGE_ID, ALLOW_DESTRUCTIVE_STEP, LOG_FILE.
 
 set -Eeuo pipefail
 
@@ -55,6 +57,9 @@ set -Eeuo pipefail
 : "${POST_DB_CHECK_CMD:=}"
 : "${SWITCH_NODE1_HOME_CMD:=}"
 : "${SWITCH_NODE2_HOME_CMD:=}"
+: "${CHANGE_ID:=UNKNOWN_CHANGE}"
+: "${ALLOW_DESTRUCTIVE_STEP:=false}"
+: "${LOG_FILE:=${RU_BASE_DIR}/logs/step_${STEP_ID}.log}"
 
 ru_ts() { date -Is; }
 
